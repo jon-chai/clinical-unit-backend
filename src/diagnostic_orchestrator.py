@@ -36,65 +36,29 @@ from cost_estimator import cost_estimator, TestCost
 # Enhanced Pydantic models for structured agent outputs with validation
 from typing import Literal
 
-class BayesianUpdate(BaseModel):
-    """Structured Bayesian reasoning for probability updates"""
-    prior_probability: float = Field(..., ge=0.0, le=1.0, description="Prior probability before evidence")
-    posterior_probability: float = Field(..., ge=0.0, le=1.0, description="Updated probability after evidence")
-    likelihood_ratio: float = Field(..., gt=0.0, description="Likelihood ratio of evidence")
-    evidence_weight: float = Field(..., ge=0.0, le=1.0, description="Strength/reliability of evidence")
-    reasoning: str = Field(..., min_length=20, description="Detailed Bayesian reasoning explanation")
-
-class EvidenceItem(BaseModel):
-    """Individual piece of evidence with impact assessment"""
-    description: str = Field(..., min_length=5, description="Evidence description")
-    impact_type: Literal["supporting", "contradictory", "neutral"] = Field(..., description="Evidence impact type")
-    strength: float = Field(..., ge=0.0, le=1.0, description="Evidence strength (0=weak, 1=strong)")
-    reliability: float = Field(..., ge=0.0, le=1.0, description="Evidence reliability (0=unreliable, 1=definitive)")
-    source: str = Field(..., min_length=3, description="Evidence source (clinical, lab, imaging, etc.)")
+# Removed complex evidence and Bayesian models - simplified approach
 
 class HypothesisItem(BaseModel):
-    """Individual hypothesis with validated probability and enhanced Bayesian tracking"""
+    """Individual hypothesis with probability, reasoning, and supporting/contradictory evidence"""
     condition: str = Field(..., min_length=1, description="Medical condition name")
     probability: float = Field(..., ge=0.0, le=1.0, description="Current probability between 0 and 1")
-    reasoning: str = Field(..., min_length=10, description="Detailed clinical reasoning")
-    supporting_evidence: List[EvidenceItem] = Field(default_factory=list, description="Supporting evidence with impact")
-    contradictory_evidence: List[EvidenceItem] = Field(default_factory=list, description="Contradictory evidence with impact")
-    bayesian_updates: List[BayesianUpdate] = Field(default_factory=list, description="History of Bayesian updates")
-    confidence_factors: Dict[str, float] = Field(default_factory=dict, description="Factors affecting confidence")
+    reasoning: str = Field(..., min_length=10, description="Clinical reasoning for this hypothesis")
+    supporting_evidence: List[str] = Field(default_factory=list, max_items=5, description="Key evidence supporting this hypothesis")
+    contradictory_evidence: List[str] = Field(default_factory=list, max_items=3, description="Evidence that challenges or contradicts this hypothesis")
 
-class ConfidenceAssessment(BaseModel):
-    """Numerical confidence assessment with detailed factors"""
-    overall_confidence: float = Field(..., ge=0.0, le=1.0, description="Overall diagnostic confidence")
-    leading_hypothesis_strength: float = Field(..., ge=0.0, le=1.0, description="Strength of leading hypothesis")
-    evidence_completeness: float = Field(..., ge=0.0, le=1.0, description="Completeness of available evidence")
-    diagnostic_clarity: float = Field(..., ge=0.0, le=1.0, description="Clarity of diagnostic picture")
-    uncertainty_factors: List[str] = Field(default_factory=list, description="Factors contributing to uncertainty")
-    confidence_level: Literal["low", "medium", "high"] = Field(..., description="Categorical confidence level")
+# Removed ConfidenceAssessment - simplified to basic confidence level only
 
 class HypothesisUpdate(BaseModel):
-    """Enhanced structured output from Dr. Hypothesis with advanced Bayesian reasoning"""
+    """Structured output from Dr. Hypothesis"""
     hypotheses: List[HypothesisItem] = Field(..., max_items=5, description="Top hypotheses ranked by probability")
-    bayesian_updates: str = Field(..., min_length=10, description="Explanation of probability updates")
-    confidence_assessment: ConfidenceAssessment = Field(..., description="Detailed confidence assessment")
-    differential_reasoning: str = Field(..., min_length=20, description="Reasoning for differential diagnosis ranking")
-    key_discriminating_features: List[str] = Field(default_factory=list, max_items=5, description="Features that distinguish between hypotheses")
+    differential_reasoning: str = Field(..., min_length=20, description="Overall reasoning for differential diagnosis")
+    confidence_level: Literal["low", "medium", "high"] = Field(..., description="Overall confidence in assessment")
     
     @validator('hypotheses')
     def validate_probabilities_sum(cls, v):
-        """Ensure probabilities are reasonable (don't need to sum to 1 for differential diagnosis)"""
+        """Ensure at least one hypothesis is provided"""
         if len(v) == 0:
             raise ValueError("At least one hypothesis must be provided")
-        return v
-    
-    @validator('confidence_assessment')
-    def validate_confidence_consistency(cls, v, values):
-        """Ensure confidence levels are consistent with hypothesis probabilities"""
-        if 'hypotheses' in values and values['hypotheses']:
-            max_prob = max(h.probability for h in values['hypotheses'])
-            if max_prob > 0.8 and v.confidence_level == "low":
-                raise ValueError("High probability hypotheses inconsistent with low confidence")
-            if max_prob < 0.3 and v.confidence_level == "high":
-                raise ValueError("Low probability hypotheses inconsistent with high confidence")
         return v
 
 class DiscriminativeValue(BaseModel):
@@ -345,92 +309,7 @@ class CaseState:
             return "No evidence accumulated yet."
         return " | ".join(self.evidence_log[-5:])  # Last 5 pieces of evidence
 
-class BayesianReasoningHelper:
-    """Helper class for Bayesian probability calculations and reasoning"""
-    
-    @staticmethod
-    def calculate_posterior(prior: float, likelihood_ratio: float) -> float:
-        """Calculate posterior probability using Bayes' theorem with likelihood ratio"""
-        # P(H|E) = P(E|H) * P(H) / P(E)
-        # Using likelihood ratio: LR = P(E|H) / P(E|not H)
-        odds_prior = prior / (1 - prior) if prior < 1.0 else 1.0
-        odds_posterior = odds_prior * likelihood_ratio
-        posterior = odds_posterior / (1 + odds_posterior)
-        return min(max(posterior, 0.001), 0.999)  # Clamp between bounds
-    
-    @staticmethod
-    def estimate_likelihood_ratio(evidence_strength: float, evidence_type: str) -> float:
-        """Estimate likelihood ratio based on evidence strength and type"""
-        base_ratios = {
-            "pathognomonic": 20.0,  # Nearly diagnostic
-            "highly_specific": 10.0,  # Very strong evidence
-            "specific": 5.0,  # Strong evidence
-            "suggestive": 2.0,  # Moderate evidence
-            "nonspecific": 1.2,  # Weak evidence
-            "contradictory": 0.5,  # Evidence against
-            "neutral": 1.0  # No impact
-        }
-        base_lr = base_ratios.get(evidence_type, 2.0)
-        # Adjust by evidence strength
-        if base_lr > 1.0:
-            return 1.0 + (base_lr - 1.0) * evidence_strength
-        else:
-            return 1.0 - (1.0 - base_lr) * evidence_strength
-    
-    @staticmethod
-    def assess_confidence_level(max_probability: float, evidence_quality: float, 
-                               num_hypotheses: int) -> Tuple[str, float]:
-        """Assess confidence level based on probability and evidence quality"""
-        # Calculate base confidence from leading probability
-        prob_confidence = max_probability
-        
-        # Adjust for evidence quality
-        quality_factor = evidence_quality
-        
-        # Adjust for number of competing hypotheses
-        competition_factor = 1.0 - (num_hypotheses - 1) * 0.05  # Decrease with more hypotheses
-        competition_factor = max(competition_factor, 0.7)
-        
-        # Combined confidence
-        overall_confidence = prob_confidence * quality_factor * competition_factor
-        
-        # Categorical levels with thresholds
-        if overall_confidence >= 0.8:
-            return "high", overall_confidence
-        elif overall_confidence >= 0.5:
-            return "medium", overall_confidence
-        else:
-            return "low", overall_confidence
-    
-    @staticmethod
-    def calculate_evidence_weight(reliability: float, specificity: str, 
-                                 clinical_context: str = "general") -> float:
-        """Calculate overall evidence weight considering multiple factors"""
-        # Base weight from reliability
-        base_weight = reliability
-        
-        # Specificity multiplier
-        specificity_multipliers = {
-            "pathognomonic": 1.0,
-            "highly_specific": 0.9,
-            "moderately_specific": 0.7,
-            "nonspecific": 0.4,
-            "contradictory": 0.8  # High weight for contradictory evidence
-        }
-        
-        specificity_mult = specificity_multipliers.get(specificity, 0.6)
-        
-        # Context adjustment
-        context_adjustments = {
-            "emergency": 1.1,  # Higher weight in emergency settings
-            "outpatient": 0.9,  # Lower weight in outpatient settings
-            "icu": 1.0,
-            "general": 1.0
-        }
-        
-        context_adj = context_adjustments.get(clinical_context, 1.0)
-        
-        return min(base_weight * specificity_mult * context_adj, 1.0)
+# Removed BayesianReasoningHelper - simplified approach without complex mathematical calculations
 
 class TestSelectionHelper:
     """Advanced helper class for sophisticated test selection and discriminative value scoring"""
@@ -946,312 +825,138 @@ class BaseSpecializedAgent:
 
 class DrHypothesis(BaseSpecializedAgent):
     """
-    Enhanced Dr. Hypothesis - Maintains probability-ranked differential diagnosis
-    with structured Bayesian reasoning, function calling, and advanced confidence assessment
+    Dr. Hypothesis - Maintains probability-ranked differential diagnosis with clinical reasoning
     """
     
     def __init__(self, client: AsyncOpenAI):
         super().__init__("Dr. Hypothesis", client)
-        self.bayesian_helper = BayesianReasoningHelper()
         
-    def _calculate_confidence_factors(self, hypotheses: List[Dict], evidence_items: List[str]) -> Dict[str, float]:
-        """Calculate confidence factors based on hypothesis and evidence characteristics"""
-        if not hypotheses:
-            return {"evidence_completeness": 0.0, "diagnostic_clarity": 0.0, "leading_hypothesis_strength": 0.0}
-        
-        # Leading hypothesis strength
-        max_prob = max(h.get("probability", 0.0) for h in hypotheses)
-        leading_strength = max_prob
-        
-        # Evidence completeness (based on number and type of evidence)
-        evidence_count = len(evidence_items)
-        evidence_completeness = min(evidence_count / 5.0, 1.0)  # Normalize to 0-1
-        
-        # Diagnostic clarity (probability separation between top hypotheses)
-        if len(hypotheses) >= 2:
-            probs = sorted([h.get("probability", 0.0) for h in hypotheses], reverse=True)
-            prob_separation = probs[0] - probs[1] if len(probs) > 1 else probs[0]
-            diagnostic_clarity = min(prob_separation * 2.0, 1.0)  # Scale separation
-        else:
-            diagnostic_clarity = max_prob
-        
-        return {
-            "evidence_completeness": evidence_completeness,
-            "diagnostic_clarity": diagnostic_clarity,
-            "leading_hypothesis_strength": leading_strength
-        }
-        
-    def _apply_bayesian_updates(self, current_hypotheses: List[DiagnosticHypothesis], 
-                               new_evidence: List[str]) -> List[Dict[str, Any]]:
-        """Apply Bayesian updates to existing hypotheses based on new evidence"""
-        updated_hypotheses = []
-        
-        for hyp in current_hypotheses:
-            # Start with current probability as prior
-            prior_prob = hyp.probability
-            
-            # Analyze new evidence impact
-            supporting_evidence = []
-            contradictory_evidence = []
-            
-            for evidence in new_evidence:
-                # Simple heuristic to categorize evidence (in real implementation, this would be more sophisticated)
-                if any(keyword in evidence.lower() for keyword in ["consistent", "supports", "confirms"]):
-                    supporting_evidence.append({
-                        "description": evidence,
-                        "impact_type": "supporting",
-                        "strength": 0.7,
-                        "reliability": 0.8,
-                        "source": "clinical"
-                    })
-                elif any(keyword in evidence.lower() for keyword in ["rules out", "negative", "inconsistent"]):
-                    contradictory_evidence.append({
-                        "description": evidence,
-                        "impact_type": "contradictory", 
-                        "strength": 0.6,
-                        "reliability": 0.8,
-                        "source": "clinical"
-                    })
-            
-            # Calculate likelihood ratio and posterior probability
-            net_lr = 1.0
-            for supp_ev in supporting_evidence:
-                lr = self.bayesian_helper.estimate_likelihood_ratio(supp_ev["strength"], "suggestive")
-                net_lr *= lr
-                
-            for contra_ev in contradictory_evidence:
-                lr = self.bayesian_helper.estimate_likelihood_ratio(contra_ev["strength"], "contradictory")
-                net_lr *= lr
-            
-            # Calculate posterior probability
-            posterior_prob = self.bayesian_helper.calculate_posterior(prior_prob, net_lr)
-            
-            updated_hypotheses.append({
-                "condition": hyp.condition,
-                "probability": posterior_prob,
-                "reasoning": f"Updated from {prior_prob:.3f} to {posterior_prob:.3f} based on new evidence. {hyp.reasoning}",
-                "supporting_evidence": supporting_evidence,
-                "contradictory_evidence": contradictory_evidence,
-                "bayesian_updates": [{
-                    "prior_probability": prior_prob,
-                    "posterior_probability": posterior_prob,
-                    "likelihood_ratio": net_lr,
-                    "evidence_weight": 0.8,
-                    "reasoning": f"Applied likelihood ratio {net_lr:.2f} based on {len(new_evidence)} new evidence items"
-                }],
-                "confidence_factors": {}
-            })
-        
-        return updated_hypotheses
+    # Removed complex calculation methods - using simplified clinical reasoning approach
         
     async def contribute(self, case_info: str, previous_findings: List[str], 
                         current_hypotheses: List[DiagnosticHypothesis],
                         session: CaseExecutionSession) -> Dict[str, Any]:
+        """Generate differential diagnosis with structured clinical reasoning"""
         
-        # Apply Bayesian updates if we have current hypotheses
-        if current_hypotheses and previous_findings:
-            updated_hypotheses = self._apply_bayesian_updates(current_hypotheses, previous_findings[-3:])
-        else:
-            updated_hypotheses = []
-        
-        system_prompt = """You are Dr. Hypothesis, an expert in differential diagnosis and advanced Bayesian reasoning.
-
-Your enhanced capabilities include:
-1. Structured Bayesian probability updates with explicit prior/posterior calculations
-2. Evidence classification and impact assessment (supporting vs contradictory)
-3. Numerical confidence assessment with detailed factors
-4. Function-calling approach for reliable differential diagnosis output
-
-You must respond with a complete JSON structure that follows this exact format:
-{
-    "hypotheses": [
-        {
-            "condition": "Primary condition name",
-            "probability": 0.XX,
-            "reasoning": "Detailed clinical reasoning with evidence analysis",
-            "supporting_evidence": [
-                {
-                    "description": "Evidence description", 
-                    "impact_type": "supporting",
-                    "strength": 0.X,
-                    "reliability": 0.X,
-                    "source": "clinical/lab/imaging/history"
-                }
-            ],
-            "contradictory_evidence": [
-                {
-                    "description": "Contradictory evidence",
-                    "impact_type": "contradictory", 
-                    "strength": 0.X,
-                    "reliability": 0.X,
-                    "source": "clinical/lab/imaging/history"
-                }
-            ],
-            "bayesian_updates": [
-                {
-                    "prior_probability": 0.XX,
-                    "posterior_probability": 0.XX,
-                    "likelihood_ratio": X.X,
-                    "evidence_weight": 0.X,
-                    "reasoning": "Explanation of Bayesian update"
-                }
-            ],
-            "confidence_factors": {
-                "evidence_completeness": 0.X,
-                "diagnostic_clarity": 0.X
-            }
-        }
-    ],
-    "bayesian_updates": "Overall explanation of probability updates and reasoning",
-    "confidence_assessment": {
-        "overall_confidence": 0.XX,
-        "leading_hypothesis_strength": 0.XX,
-        "evidence_completeness": 0.XX,
-        "diagnostic_clarity": 0.XX,
-        "uncertainty_factors": ["factor1", "factor2"],
-        "confidence_level": "low/medium/high"
-    },
-    "differential_reasoning": "Detailed reasoning for differential diagnosis ranking",
-    "key_discriminating_features": ["feature1", "feature2", "feature3"]
-}
-
-CRITICAL: Provide numerical confidence assessments and explicit Bayesian reasoning."""
-
-        # Prepare enhanced context
+        # Build context from case and findings
         findings_text = "\n".join(previous_findings) if previous_findings else "No additional findings yet."
         
-        if updated_hypotheses:
-            current_hyp_text = "\nPrevious hypotheses with Bayesian updates:\n" + \
-                "\n".join([f"- {h['condition']} (Prior: {h['bayesian_updates'][0]['prior_probability']:.3f} → Posterior: {h['probability']:.3f}): {h['reasoning'][:100]}..." 
-                          for h in updated_hypotheses])
-        elif current_hypotheses:
-            current_hyp_text = "\nCurrent hypotheses:\n" + \
-                "\n".join([f"- {h.condition} ({h.probability:.3f}): {h.reasoning}" 
+        # Format current hypotheses if available
+        if current_hypotheses:
+            current_hyp_text = "\nPrevious hypotheses:\n" + \
+                "\n".join([f"- {h.condition} ({h.probability:.2f}): {h.reasoning}" 
                           for h in current_hypotheses])
         else:
             current_hyp_text = "\nNo current hypotheses established."
         
-        user_message = f"""
-=== CLINICAL CASE ANALYSIS ===
-Initial Case: {case_info}
+        # Create the structured prompt following the new format
+        system_prompt = f"""You are Dr. Hypothesis, a clinical expert specializing in differential diagnosis and clinical reasoning.
 
-Previous Findings and Evidence:
-{findings_text}
-{current_hyp_text}
+Core responsibilities:
+- Generate ranked differential diagnoses based on clinical evidence
+- Assign probability estimates to each diagnostic possibility  
+- Provide clear clinical reasoning for each hypothesis
+- Identify specific supporting evidence for each hypothesis
+- Acknowledge contradictory evidence that challenges each hypothesis
+- Update probabilities using Bayesian reasoning based on new evidence
+- Maintain appropriate clinical confidence levels
+- Explicitly detail how new findings affect your diagnostic thought process
 
-TASK: Provide comprehensive differential diagnosis with:
-1. Structured Bayesian probability updates
-2. Evidence classification (supporting vs contradictory)
-3. Numerical confidence assessment
-4. Clear discriminating features
+Clinical expertise:
+Your reasoning should integrate symptoms, signs, patient demographics, risk factors, and available test results to formulate the most likely diagnoses. Consider epidemiology, pathophysiology, and clinical patterns when ranking hypotheses.
 
-Please analyze and update the differential diagnosis using advanced Bayesian reasoning.
-"""
+Evidence analysis:
+For each hypothesis, explicitly identify:
+- Supporting evidence: Clinical findings, symptoms, demographics, or test results that support this diagnosis
+- Contradictory evidence: Any findings or factors that argue against this diagnosis or reduce its likelihood
+- Be objective and acknowledge uncertainty when evidence is mixed or incomplete
 
-        response = await self._call_llm(system_prompt, user_message, temperature=0.3)
+Approach:
+- Systematically analyze all available clinical information
+- Generate 3-5 most likely diagnoses ranked by probability
+- Provide clear, evidence-based reasoning for each hypothesis
+- Explicitly list supporting and contradictory evidence for each hypothesis
+- Assign realistic probability estimates (totaling ≤1.0)
+- Explain your Bayesian reasoning clearly and understandably
+- Assess overall confidence in the differential diagnosis
+
+Output format:
+Respond with a JSON structure containing:
+{{
+    "hypotheses": [
+        {{
+            "condition": "Condition name",
+            "probability": 0.XX,
+            "reasoning": "Clinical reasoning for this diagnosis",
+            "supporting_evidence": ["Evidence point 1", "Evidence point 2", "Evidence point 3"],
+            "contradictory_evidence": ["Contradictory finding 1", "Contradictory finding 2"]
+        }}
+    ],
+    "differential_reasoning": "Overall reasoning for the differential diagnosis ranking and analysis",
+    "confidence_level": "low/medium/high"
+}}
+
+Case: {case_info}
+
+Accumulated findings: {findings_text}{current_hyp_text}
+
+Current Cumulative Cost: ${session.total_cost:.2f}
+
+Provide your differential diagnosis analysis based on the available information."""
+
+        response = await self._call_llm(system_prompt, "", temperature=0.3)
         session.add_agent_message(self.role_name, "hypothesis_update", response)
         
-        # Enhanced parsing with multiple fallback strategies
-        return await self._parse_structured_response(response, session)
+        # Parse structured response
+        return self._parse_structured_response(response, session)
         
-    async def _parse_structured_response(self, response: str, session: CaseExecutionSession) -> Dict[str, Any]:
-        """Enhanced parsing with structured validation and graceful fallbacks"""
+    def _parse_structured_response(self, response: str, session: CaseExecutionSession) -> Dict[str, Any]:
+        """Parse structured response with validation and update differential diagnosis"""
         import json
         import re
         
         try:
-            # First, try to extract and parse JSON
+            # Extract and parse JSON
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
                 parsed_json = json.loads(json_match.group())
                 
-                # Try to validate with enhanced HypothesisUpdate model
-                try:
-                    # Handle legacy format compatibility
-                    if "confidence_level" in parsed_json and "confidence_assessment" not in parsed_json:
-                        parsed_json["confidence_assessment"] = {
-                            "overall_confidence": 0.5,
-                            "leading_hypothesis_strength": 0.5,
-                            "evidence_completeness": 0.5,
-                            "diagnostic_clarity": 0.5,
-                            "uncertainty_factors": ["Legacy format conversion"],
-                            "confidence_level": parsed_json.get("confidence_level", "medium")
-                        }
+                # Validate with simplified model
+                structured_response = HypothesisUpdate(**parsed_json)
+                structured_data = structured_response.dict()
+                
+                # Update case state differential diagnosis with new probabilities
+                if 'hypotheses' in structured_data:
+                    differential_dict = {}
+                    for hypothesis in structured_data['hypotheses']:
+                        condition = hypothesis.get('condition', '')
+                        probability = hypothesis.get('probability', 0.0)
+                        if condition:
+                            differential_dict[condition] = probability
                     
-                    # Ensure required fields for enhanced model
-                    if "differential_reasoning" not in parsed_json:
-                        parsed_json["differential_reasoning"] = parsed_json.get("bayesian_updates", "Standard differential reasoning applied")
+                    # Update the session's case state
+                    session.update_differential_diagnosis(differential_dict)
+                
+                # Store structured data
+                session.agent_messages[-1].structured_data = structured_data
+                return structured_data
                     
-                    if "key_discriminating_features" not in parsed_json:
-                        parsed_json["key_discriminating_features"] = []
-                    
-                    # Validate with Pydantic model
-                    structured_response = HypothesisUpdate(**parsed_json)
-                    structured_data = structured_response.dict()
-                    
-                    # Store enhanced structured data
-                    session.agent_messages[-1].structured_data = structured_data
-                    return structured_data
-                    
-                except Exception as pydantic_error:
-                    # Fallback to basic validation and correction
-                    validated_json = self._validate_and_correct_json(parsed_json)
-                    session.agent_messages[-1].structured_data = validated_json
-                    return validated_json
-                    
-        except json.JSONDecodeError as json_error:
-            # Final fallback - create minimal structure from text
+        except (json.JSONDecodeError, Exception) as error:
+            # Fallback - create minimal structure
             return self._create_fallback_structure(response, session)
     
-    def _validate_and_correct_json(self, parsed_json: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate and correct JSON structure to ensure compatibility"""
-        corrected = {
-            "hypotheses": [],
-            "bayesian_updates": parsed_json.get("bayesian_updates", "Bayesian reasoning applied"),
-            "confidence_assessment": {
-                "overall_confidence": 0.5,
-                "leading_hypothesis_strength": 0.5,
-                "evidence_completeness": 0.5,
-                "diagnostic_clarity": 0.5,
-                "uncertainty_factors": ["JSON structure correction applied"],
-                "confidence_level": parsed_json.get("confidence_level", "medium")
-            },
-            "differential_reasoning": parsed_json.get("differential_reasoning", parsed_json.get("bayesian_updates", "Differential reasoning applied")),
-            "key_discriminating_features": parsed_json.get("key_discriminating_features", [])
-        }
-        
-        # Process hypotheses with validation
-        if "hypotheses" in parsed_json and isinstance(parsed_json["hypotheses"], list):
-            for hyp in parsed_json["hypotheses"][:5]:  # Limit to 5
-                if isinstance(hyp, dict):
-                    corrected_hyp = {
-                        "condition": str(hyp.get("condition", "Unknown condition")),
-                        "probability": float(max(0.0, min(1.0, hyp.get("probability", 0.3)))),
-                        "reasoning": str(hyp.get("reasoning", "Clinical reasoning applied")),
-                        "supporting_evidence": [],
-                        "contradictory_evidence": [],
-                        "bayesian_updates": [],
-                        "confidence_factors": {}
-                    }
-                    corrected["hypotheses"].append(corrected_hyp)
-        
-        return corrected
-    
     def _create_fallback_structure(self, response: str, session: CaseExecutionSession) -> Dict[str, Any]:
-        """Create minimal fallback structure when all parsing fails"""
+        """Create fallback structure when parsing fails"""
         fallback = {
-            "hypotheses": [],
-            "bayesian_updates": f"Fallback parsing applied. Original response: {response[:200]}...",
-            "confidence_assessment": {
-                "overall_confidence": 0.3,
-                "leading_hypothesis_strength": 0.3,
-                "evidence_completeness": 0.2,
-                "diagnostic_clarity": 0.2,
-                "uncertainty_factors": ["Parsing failed", "Fallback structure used"],
-                "confidence_level": "low"
-            },
-            "differential_reasoning": "Fallback differential reasoning due to parsing failure",
-            "key_discriminating_features": []
+            "hypotheses": [
+                {
+                    "condition": "Unable to parse diagnosis",
+                    "probability": 0.3,
+                    "reasoning": "Response parsing failed - manual review needed"
+                }
+            ],
+            "differential_reasoning": f"Parsing failed. Original response: {response[:200]}...",
+            "confidence_level": "low"
         }
         
         session.agent_messages[-1].structured_data = fallback

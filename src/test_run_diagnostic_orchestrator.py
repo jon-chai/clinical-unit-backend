@@ -141,7 +141,7 @@ class MarkdownLogger:
             self.md_content.append(f"**Action Data:** {str(action_data)}\n\n")
     
     def log_round_hypotheses(self, round_num, hypotheses):
-        """Log the top 3 hypotheses at the end of each round"""
+        """Log the top 3 hypotheses at the end of each round with evidence"""
         print(f"\n📋 Round {round_num} - Top 3 Hypotheses:")
         self.md_content.append(f"#### 📋 Round {round_num} - Top 3 Hypotheses\n\n")
         
@@ -151,15 +151,47 @@ class MarkdownLogger:
             return
         
         for i, hyp in enumerate(hypotheses[:3], 1):
-            confidence_pct = f"{hyp.probability * 100:.1f}%" if hasattr(hyp, 'probability') else "N/A"
-            condition = hyp.condition if hasattr(hyp, 'condition') else str(hyp)
-            reasoning = hyp.reasoning if hasattr(hyp, 'reasoning') else "No reasoning provided"
+            # Handle both dictionary format and object format
+            if isinstance(hyp, dict):
+                condition = hyp.get('condition', f'Hypothesis {i}')
+                confidence = hyp.get('confidence', hyp.get('probability', 0))
+                reasoning = hyp.get('reasoning', 'No reasoning provided')
+                supporting_evidence = hyp.get('supporting_evidence', [])
+                contradictory_evidence = hyp.get('contradictory_evidence', [])
+            else:
+                # Object format (has attributes)
+                condition = getattr(hyp, 'condition', str(hyp))
+                confidence = getattr(hyp, 'probability', getattr(hyp, 'confidence', 0))
+                reasoning = getattr(hyp, 'reasoning', 'No reasoning provided')
+                supporting_evidence = getattr(hyp, 'supporting_evidence', [])
+                contradictory_evidence = getattr(hyp, 'contradictory_evidence', [])
+            
+            confidence_pct = f"{confidence * 100:.1f}%" if confidence else "N/A"
             
             print(f"   {i}. {condition} ({confidence_pct})")
             print(f"      Reasoning: {reasoning[:100]}...")
             
+            if supporting_evidence:
+                print(f"      Supporting: {', '.join(supporting_evidence[:2])}{'...' if len(supporting_evidence) > 2 else ''}")
+            
+            if contradictory_evidence:
+                print(f"      Challenges: {', '.join(contradictory_evidence[:2])}{'...' if len(contradictory_evidence) > 2 else ''}")
+            
+            # Markdown formatting
             self.md_content.append(f"{i}. **{condition}** - {confidence_pct}\n")
-            self.md_content.append(f"   - *Reasoning:* {reasoning}\n\n")
+            self.md_content.append(f"   - *Reasoning:* {reasoning}\n")
+            
+            if supporting_evidence:
+                self.md_content.append(f"   - *Supporting Evidence:*\n")
+                for evidence in supporting_evidence:
+                    self.md_content.append(f"     • {evidence}\n")
+            
+            if contradictory_evidence:
+                self.md_content.append(f"   - *Contradictory Evidence:*\n")
+                for evidence in contradictory_evidence:
+                    self.md_content.append(f"     • {evidence}\n")
+            
+            self.md_content.append("\n")
         
         self.md_content.append("\n")
     
@@ -265,11 +297,15 @@ def _parse_hypotheses_from_message(content):
                         condition = hypothesis.get('condition', f'Hypothesis {i+1}')
                         confidence = hypothesis.get('probability', 0)  # New field name
                         reasoning = hypothesis.get('reasoning', 'No reasoning provided')
+                        supporting_evidence = hypothesis.get('supporting_evidence', [])
+                        contradictory_evidence = hypothesis.get('contradictory_evidence', [])
                         
                         hypotheses.append({
                             'condition': condition,
                             'confidence': confidence,
-                            'reasoning': reasoning
+                            'reasoning': reasoning,
+                            'supporting_evidence': supporting_evidence,
+                            'contradictory_evidence': contradictory_evidence
                         })
             
             # Legacy format support
@@ -279,11 +315,16 @@ def _parse_hypotheses_from_message(content):
                         condition = diagnosis.get('condition', f'Hypothesis {i+1}')
                         confidence = diagnosis.get('confidence_score', diagnosis.get('likelihood', 0))
                         reasoning = diagnosis.get('reasoning', diagnosis.get('rationale', 'No reasoning provided'))
+                        # Legacy format may not have evidence fields
+                        supporting_evidence = diagnosis.get('supporting_evidence', [])
+                        contradictory_evidence = diagnosis.get('contradictory_evidence', [])
                         
                         hypotheses.append({
                             'condition': condition,
                             'confidence': confidence,
-                            'reasoning': reasoning
+                            'reasoning': reasoning,
+                            'supporting_evidence': supporting_evidence,
+                            'contradictory_evidence': contradictory_evidence
                         })
         except json.JSONDecodeError:
             pass
