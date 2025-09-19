@@ -84,8 +84,15 @@ class MarkdownLogger:
                         print(f"     {i}. {test.get('test_name', 'Unknown Test')}")
                         print(f"        Rationale: {test.get('rationale', 'No rationale')[:80]}...")
                         if test.get('discriminative_value'):
-                            disc_score = test['discriminative_value'].get('diagnostic_yield_score', 0)
-                            print(f"        Discriminative Value: {disc_score:.3f}")
+                            # Handle both old complex format and new simplified string format
+                            disc_value = test['discriminative_value']
+                            if isinstance(disc_value, dict) and 'diagnostic_yield_score' in disc_value:
+                                # Old complex format
+                                disc_score = disc_value.get('diagnostic_yield_score', 0)
+                                print(f"        Discriminative Value: {disc_score:.3f}")
+                            else:
+                                # New simplified string format
+                                print(f"        Discriminative Value: {disc_value}")
                         if test.get('estimated_cost'):
                             print(f"        Cost: ${test['estimated_cost']:.2f}")
                     
