@@ -13,6 +13,7 @@ This module provides:
 
 import os
 import json
+import re
 import uuid
 import asyncio
 from datetime import datetime
@@ -96,18 +97,55 @@ class HypothesisUpdate(BaseModel):
                 raise ValueError("Low probability hypotheses inconsistent with high confidence")
         return v
 
+class DiscriminativeValue(BaseModel):
+    """Quantitative assessment of test's discriminative power"""
+    hypothesis_separation_score: float = Field(..., ge=0.0, le=1.0, description="How well test separates competing hypotheses")
+    sensitivity_score: float = Field(..., ge=0.0, le=1.0, description="Test sensitivity for target conditions")
+    specificity_score: float = Field(..., ge=0.0, le=1.0, description="Test specificity for target conditions")
+    diagnostic_yield_score: float = Field(..., ge=0.0, le=1.0, description="Overall diagnostic yield assessment")
+    
+class StepwiseReasoning(BaseModel):
+    """Step-wise diagnostic approach reasoning"""
+    diagnostic_tier: Literal["first_line", "second_line", "third_line", "specialized"] = Field(..., description="Diagnostic tier in stepwise approach")
+    prerequisite_tests: List[str] = Field(default_factory=list, description="Tests that should be done first")
+    accessibility: Literal["immediate", "same_day", "within_week", "referral_needed"] = Field(..., description="Test accessibility")
+    cost_tier: Literal["low", "moderate", "high", "very_high"] = Field(..., description="Cost categorization")
+
+class RedundancyAssessment(BaseModel):
+    """Assessment of test redundancy with existing tests"""
+    redundancy_score: float = Field(..., ge=0.0, le=1.0, description="Overlap with already performed tests (0=no overlap, 1=complete overlap)")
+    overlapping_tests: List[str] = Field(default_factory=list, description="Tests that provide similar information")
+    unique_information: str = Field(..., min_length=10, description="Unique diagnostic information this test provides")
+    incremental_value: float = Field(..., ge=0.0, le=1.0, description="Additional diagnostic value beyond existing tests")
+
 class TestRecommendationItem(BaseModel):
-    """Individual test recommendation with validation"""
+    """Enhanced individual test recommendation with discriminative scoring"""
     test_name: str = Field(..., min_length=2, description="Specific diagnostic test name")
     rationale: str = Field(..., min_length=10, description="Clinical rationale for test")
     priority: int = Field(..., ge=1, le=3, description="Priority level (1=highest, 3=lowest)")
-    discriminative_value: str = Field(..., min_length=5, description="How test differentiates between diagnoses")
+    discriminative_value: DiscriminativeValue = Field(..., description="Quantitative discriminative power assessment")
+    stepwise_reasoning: StepwiseReasoning = Field(..., description="Step-wise diagnostic approach rationale")
+    redundancy_assessment: RedundancyAssessment = Field(..., description="Assessment of test redundancy")
     estimated_cost: Optional[float] = Field(None, ge=0, description="Estimated cost in USD")
+    cost_effectiveness_ratio: Optional[float] = Field(None, ge=0, description="Diagnostic yield per dollar")
+    
+    @validator('cost_effectiveness_ratio')
+    def calculate_cost_effectiveness(cls, v, values):
+        """Calculate cost-effectiveness if not provided"""
+        if v is None and values.get('estimated_cost') and values.get('discriminative_value'):
+            cost = values['estimated_cost']
+            yield_score = values['discriminative_value'].diagnostic_yield_score
+            if cost > 0:
+                return yield_score / cost * 1000  # Scale for readability
+        return v
 
 class TestRecommendations(BaseModel):
-    """Structured output from Dr. Test-Chooser"""
+    """Enhanced structured output from Dr. Test-Chooser"""
     recommended_tests: List[TestRecommendationItem] = Field(..., max_items=3, description="Up to 3 recommended tests")
     reasoning: str = Field(..., min_length=10, description="Overall test selection strategy")
+    stepwise_strategy: str = Field(..., min_length=20, description="Step-wise diagnostic approach explanation")
+    redundancy_analysis: str = Field(..., min_length=15, description="Analysis of test redundancy and complementarity")
+    cost_optimization_notes: str = Field(..., min_length=10, description="Cost-effectiveness considerations")
 
 class ChallengeItem(BaseModel):
     """Individual challenge to current thinking"""
@@ -393,6 +431,250 @@ class BayesianReasoningHelper:
         context_adj = context_adjustments.get(clinical_context, 1.0)
         
         return min(base_weight * specificity_mult * context_adj, 1.0)
+
+class TestSelectionHelper:
+    """Advanced helper class for sophisticated test selection and discriminative value scoring"""
+    
+    # Test categories and their characteristics
+    TEST_CATEGORIES = {
+        "blood_tests": {
+            "accessibility": "immediate",
+            "cost_tier": "low",
+            "diagnostic_tier": "first_line",
+            "turnaround_time": "hours"
+        },
+        "imaging_basic": {
+            "accessibility": "same_day", 
+            "cost_tier": "moderate",
+            "diagnostic_tier": "first_line",
+            "turnaround_time": "hours"
+        },
+        "imaging_advanced": {
+            "accessibility": "within_week",
+            "cost_tier": "high", 
+            "diagnostic_tier": "second_line",
+            "turnaround_time": "days"
+        },
+        "biopsy": {
+            "accessibility": "referral_needed",
+            "cost_tier": "very_high",
+            "diagnostic_tier": "third_line", 
+            "turnaround_time": "weeks"
+        },
+        "specialty_tests": {
+            "accessibility": "referral_needed",
+            "cost_tier": "high",
+            "diagnostic_tier": "specialized",
+            "turnaround_time": "days_to_weeks"
+        }
+    }
+    
+    # Common test redundancies and overlaps
+    TEST_REDUNDANCIES = {
+        "cbc": ["complete_blood_count", "full_blood_count", "hemogram"],
+        "chemistry_panel": ["basic_metabolic_panel", "comprehensive_metabolic_panel", "chemistry_7", "chemistry_14"],
+        "chest_imaging": ["chest_xray", "chest_ct", "chest_mri"],
+        "cardiac_enzymes": ["troponin", "ck_mb", "myoglobin"],
+        "liver_function": ["alt", "ast", "bilirubin", "alkaline_phosphatase"],
+        "coagulation": ["pt", "ptt", "inr", "coagulation_studies"]
+    }
+    
+    @staticmethod
+    def calculate_discriminative_score(test_name: str, hypotheses: List[DiagnosticHypothesis]) -> DiscriminativeValue:
+        """Calculate discriminative value score for a test given current hypotheses"""
+        if not hypotheses or len(hypotheses) < 2:
+            # Limited discriminative value with few hypotheses
+            return DiscriminativeValue(
+                hypothesis_separation_score=0.3,
+                sensitivity_score=0.6,
+                specificity_score=0.6, 
+                diagnostic_yield_score=0.4
+            )
+        
+        # Calculate separation score based on hypothesis probabilities
+        probs = [h.probability for h in hypotheses]
+        prob_range = max(probs) - min(probs)
+        separation_score = min(prob_range * 2.0, 1.0)  # Scale to 0-1
+        
+        # Estimate sensitivity/specificity based on test type and condition match
+        sensitivity_score = TestSelectionHelper._estimate_test_performance(test_name, hypotheses, "sensitivity")
+        specificity_score = TestSelectionHelper._estimate_test_performance(test_name, hypotheses, "specificity")
+        
+        # Overall diagnostic yield
+        diagnostic_yield = (separation_score + sensitivity_score + specificity_score) / 3
+        
+        return DiscriminativeValue(
+            hypothesis_separation_score=separation_score,
+            sensitivity_score=sensitivity_score,
+            specificity_score=specificity_score,
+            diagnostic_yield_score=diagnostic_yield
+        )
+    
+    @staticmethod
+    def _estimate_test_performance(test_name: str, hypotheses: List[DiagnosticHypothesis], metric: str) -> float:
+        """Estimate test performance based on test name and target conditions"""
+        test_lower = test_name.lower()
+        
+        # High-performance test patterns
+        high_performance_patterns = {
+            "biopsy": 0.95,
+            "pathology": 0.95,
+            "culture": 0.90,
+            "pcr": 0.90,
+            "genetic": 0.85
+        }
+        
+        # Medium-performance test patterns  
+        medium_performance_patterns = {
+            "ct": 0.80,
+            "mri": 0.80,
+            "echo": 0.75,
+            "ultrasound": 0.70,
+            "xray": 0.65
+        }
+        
+        # Basic test patterns
+        basic_performance_patterns = {
+            "blood": 0.60,
+            "urine": 0.55,
+            "cbc": 0.50,
+            "chemistry": 0.50
+        }
+        
+        # Check test patterns
+        for pattern, score in high_performance_patterns.items():
+            if pattern in test_lower:
+                return min(score + 0.05, 1.0) if metric == "specificity" else score
+        
+        for pattern, score in medium_performance_patterns.items():
+            if pattern in test_lower:
+                return score
+        
+        for pattern, score in basic_performance_patterns.items():
+            if pattern in test_lower:
+                return score
+        
+        # Default moderate performance
+        return 0.65
+    
+    @staticmethod
+    def assess_test_redundancy(test_name: str, performed_tests: List[str]) -> RedundancyAssessment:
+        """Assess redundancy of proposed test with already performed tests"""
+        test_lower = test_name.lower()
+        performed_lower = [t.lower() for t in performed_tests]
+        
+        overlapping_tests = []
+        redundancy_score = 0.0
+        
+        # Check for direct redundancy
+        if test_lower in performed_lower:
+            redundancy_score = 1.0
+            overlapping_tests.append(test_name)
+        else:
+            # Check for category overlap
+            for category, synonyms in TestSelectionHelper.TEST_REDUNDANCIES.items():
+                test_matches = any(synonym in test_lower for synonym in synonyms)
+                performed_matches = [t for t in performed_lower if any(synonym in t for synonym in synonyms)]
+                
+                if test_matches and performed_matches:
+                    redundancy_score = max(redundancy_score, 0.7)
+                    overlapping_tests.extend([t for t in performed_tests if t.lower() in performed_matches])
+        
+        # Calculate incremental value
+        incremental_value = max(0.1, 1.0 - redundancy_score)
+        
+        unique_info = TestSelectionHelper._generate_unique_information_description(test_name, overlapping_tests)
+        
+        return RedundancyAssessment(
+            redundancy_score=redundancy_score,
+            overlapping_tests=overlapping_tests,
+            unique_information=unique_info,
+            incremental_value=incremental_value
+        )
+    
+    @staticmethod
+    def _generate_unique_information_description(test_name: str, overlapping_tests: List[str]) -> str:
+        """Generate description of unique diagnostic information"""
+        if not overlapping_tests:
+            return f"{test_name} provides novel diagnostic information not available from previous tests"
+        
+        test_lower = test_name.lower()
+        
+        # Specific unique information patterns
+        if "ct" in test_lower and any("xray" in t.lower() for t in overlapping_tests):
+            return "CT provides cross-sectional anatomy and better soft tissue detail than X-ray"
+        elif "mri" in test_lower and any("ct" in t.lower() for t in overlapping_tests):
+            return "MRI offers superior soft tissue contrast and no radiation exposure compared to CT"
+        elif "echo" in test_lower and any("chest" in t.lower() for t in overlapping_tests):
+            return "Echocardiogram provides detailed cardiac function assessment beyond chest imaging"
+        elif "culture" in test_lower and any("blood" in t.lower() for t in overlapping_tests):
+            return "Culture provides organism identification and antibiotic sensitivity beyond basic blood tests"
+        
+        return f"{test_name} offers additional specific diagnostic information complementing {', '.join(overlapping_tests)}"
+    
+    @staticmethod
+    def determine_stepwise_tier(test_name: str, cost: float, hypotheses: List[DiagnosticHypothesis]) -> StepwiseReasoning:
+        """Determine appropriate diagnostic tier and stepwise reasoning"""
+        test_lower = test_name.lower()
+        
+        # Categorize test
+        category = TestSelectionHelper._categorize_test(test_name)
+        category_info = TestSelectionHelper.TEST_CATEGORIES.get(category, TestSelectionHelper.TEST_CATEGORIES["specialty_tests"])
+        
+        # Determine prerequisites
+        prerequisites = TestSelectionHelper._determine_prerequisites(test_name, hypotheses)
+        
+        return StepwiseReasoning(
+            diagnostic_tier=category_info["diagnostic_tier"],
+            prerequisite_tests=prerequisites,
+            accessibility=category_info["accessibility"],
+            cost_tier=category_info["cost_tier"]
+        )
+    
+    @staticmethod
+    def _categorize_test(test_name: str) -> str:
+        """Categorize test into predefined categories"""
+        test_lower = test_name.lower()
+        
+        blood_patterns = ["blood", "cbc", "chemistry", "troponin", "glucose", "electrolyte", "liver", "kidney"]
+        basic_imaging_patterns = ["xray", "ultrasound", "echo"]
+        advanced_imaging_patterns = ["ct", "mri", "pet", "angiogram"]
+        biopsy_patterns = ["biopsy", "aspiration", "cytology"]
+        
+        if any(pattern in test_lower for pattern in blood_patterns):
+            return "blood_tests"
+        elif any(pattern in test_lower for pattern in basic_imaging_patterns):
+            return "imaging_basic"
+        elif any(pattern in test_lower for pattern in advanced_imaging_patterns):
+            return "imaging_advanced"
+        elif any(pattern in test_lower for pattern in biopsy_patterns):
+            return "biopsy"
+        else:
+            return "specialty_tests"
+    
+    @staticmethod
+    def _determine_prerequisites(test_name: str, hypotheses: List[DiagnosticHypothesis]) -> List[str]:
+        """Determine prerequisite tests that should be done first"""
+        test_lower = test_name.lower()
+        prerequisites = []
+        
+        # Advanced imaging usually requires basic workup first
+        if any(pattern in test_lower for pattern in ["ct", "mri", "pet"]):
+            prerequisites.extend(["CBC", "Basic metabolic panel"])
+            if "chest" in test_lower:
+                prerequisites.append("Chest X-ray")
+        
+        # Invasive procedures require imaging first
+        if any(pattern in test_lower for pattern in ["biopsy", "aspiration"]):
+            prerequisites.extend(["CBC", "Coagulation studies"])
+            if "liver" in test_lower:
+                prerequisites.extend(["Ultrasound abdomen", "CT abdomen"])
+        
+        # Specialty tests often require basic workup
+        if any(pattern in test_lower for pattern in ["angiogram", "catheter"]):
+            prerequisites.extend(["CBC", "Chemistry panel", "Coagulation studies", "ECG"])
+        
+        return prerequisites
 
 @dataclass
 class DeliberationState:
@@ -977,24 +1259,90 @@ Please analyze and update the differential diagnosis using advanced Bayesian rea
 
 class DrTestChooser(BaseSpecializedAgent):
     """
-    Dr. Test-Chooser - Selects diagnostic tests that maximally discriminate 
-    between leading hypotheses
+    Dr. Test-Chooser - Sophisticated diagnostic test selection with discriminative value scoring,
+    redundancy detection, and stepwise diagnostic approach
     """
     
     def __init__(self, client: AsyncOpenAI):
         super().__init__("Dr. Test-Chooser", client)
+        self.performed_tests = []
         
     async def contribute(self, case_info: str, previous_findings: List[str], 
                         current_hypotheses: List[DiagnosticHypothesis],
                         session: CaseExecutionSession) -> Dict[str, Any]:
         
+        # Generate candidate tests using LLM
+        candidate_tests = await self._generate_candidate_tests(case_info, previous_findings, current_hypotheses)
+        
+        # Apply sophisticated scoring and filtering
+        scored_tests = []
+        for test in candidate_tests:
+            # Calculate discriminative value
+            discriminative_value = TestSelectionHelper.calculate_discriminative_score(test["test_name"], current_hypotheses)
+            
+            # Assess redundancy with performed tests
+            redundancy = TestSelectionHelper.assess_test_redundancy(test["test_name"], self.performed_tests)
+            
+            # Determine stepwise reasoning
+            stepwise = TestSelectionHelper.determine_stepwise_tier(test["test_name"], test.get("estimated_cost", 100), current_hypotheses)
+            
+            # Calculate overall priority score
+            priority_score = self._calculate_priority_score(discriminative_value, redundancy, stepwise, test.get("estimated_cost", 100))
+            
+            # Create enhanced test recommendation
+            enhanced_test = TestRecommendationItem(
+                test_name=test["test_name"],
+                rationale=test.get("rationale", "Diagnostic test recommendation"),
+                priority=test.get("priority", 2),  # Default to medium priority
+                discriminative_value=discriminative_value,
+                stepwise_reasoning=stepwise,
+                redundancy_assessment=redundancy,
+                estimated_cost=test.get("estimated_cost", 100.0)
+            )
+            
+            scored_tests.append(enhanced_test)
+        
+        # Apply stepwise filtering and ranking
+        final_recommendations = self._apply_stepwise_filtering(scored_tests)
+        
+        # Generate comprehensive reasoning
+        reasoning = self._generate_comprehensive_reasoning(final_recommendations, current_hypotheses)
+        
+        # Generate additional required fields for TestRecommendations
+        stepwise_strategy = self._generate_stepwise_strategy(final_recommendations)
+        redundancy_analysis = self._generate_redundancy_analysis(final_recommendations)
+        cost_optimization_notes = self._generate_cost_optimization_notes(final_recommendations)
+        
+        # Create structured response
+        test_recommendations = TestRecommendations(
+            recommended_tests=final_recommendations,
+            reasoning=reasoning,
+            stepwise_strategy=stepwise_strategy,
+            redundancy_analysis=redundancy_analysis,
+            cost_optimization_notes=cost_optimization_notes
+        )
+        
+        # Create JSON response for consistency with other agents
+        response_json = json.dumps(test_recommendations.dict(), indent=2)
+        
+        # Record message and structured data
+        session.add_agent_message(self.role_name, "test_recommendation", response_json)
+        session.agent_messages[-1].structured_data = test_recommendations.dict()
+        
+        return test_recommendations.dict()
+    
+    async def _generate_candidate_tests(self, case_info: str, previous_findings: List[str], 
+                                      current_hypotheses: List[DiagnosticHypothesis]) -> List[Dict[str, Any]]:
+        """Generate initial candidate tests using LLM"""
+        
         system_prompt = """You are Dr. Test-Chooser, a specialist in diagnostic test selection and evidence-based medicine.
 
 Your role:
-1. Select up to 3 diagnostic tests per round that maximally discriminate between leading hypotheses
+1. Select up to 5-8 diagnostic tests that maximally discriminate between leading hypotheses
 2. Prioritize tests with highest diagnostic yield
 3. Consider test characteristics: sensitivity, specificity, cost-effectiveness
 4. Avoid redundant or low-yield investigations
+5. Follow stepwise diagnostic approach (basic tests before advanced ones)
 
 Format your response as JSON:
 {
@@ -1002,17 +1350,20 @@ Format your response as JSON:
         {
             "test_name": "specific test name",
             "rationale": "why this test discriminates between hypotheses",
-            "priority": 1-3,
+            "urgency": "routine|urgent|emergent",
             "discriminative_value": "which conditions this test helps distinguish",
             "estimated_cost": estimated_cost_in_dollars
         }
-    ],
-    "reasoning": "overall test selection strategy"
+    ]
 }"""
 
-        hypotheses_text = "\n".join([f"- {h.condition} ({h.probability:.2f})" 
-                                   for h in current_hypotheses[:3]]) if current_hypotheses else "No hypotheses available."
-        findings_text = "\n".join(previous_findings) if previous_findings else "No findings yet."
+        hypotheses_text = "\n".join([f"- {h.condition} ({h.probability:.2f}): {h.reasoning[:150]}..." 
+                                   for h in current_hypotheses[:5]]) if current_hypotheses else "No hypotheses available."
+        findings_text = "\n".join(previous_findings[-5:]) if previous_findings else "No findings yet."
+        
+        performed_tests_info = ""
+        if self.performed_tests:
+            performed_tests_info = f"\nAlready performed tests: {', '.join(self.performed_tests)}"
         
         user_message = f"""
 Case: {case_info}
@@ -1020,41 +1371,227 @@ Case: {case_info}
 Current Top Hypotheses:
 {hypotheses_text}
 
-Previous Findings:
-{findings_text}
+Recent Findings:
+{findings_text}{performed_tests_info}
 
 Select the most discriminative diagnostic tests to differentiate between these hypotheses.
+Consider cost-effectiveness and avoid redundancy with already performed tests.
 """
 
         response = await self._call_llm(system_prompt, user_message)
-        session.add_agent_message(self.role_name, "test_recommendation", response)
         
-        # Try structured parsing first
-        structured_data = None
+        # Parse JSON response
         try:
             import json
             import re
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
                 parsed_json = json.loads(json_match.group())
-                # Try to create structured TestRecommendations
-                try:
-                    structured_response = TestRecommendations(**parsed_json)
-                    structured_data = structured_response.dict()
-                    session.agent_messages[-1].structured_data = structured_data
-                    return structured_data
-                except Exception:
-                    # Fall back to raw JSON
-                    structured_data = parsed_json
-                    session.agent_messages[-1].structured_data = structured_data
-                    return parsed_json
-        except:
-            pass
-            
-        return {
-            "recommended_tests": [],
-            "reasoning": response
+                return parsed_json.get("recommended_tests", [])
+        except Exception as e:
+            print(f"Error parsing test recommendations: {e}")
+        
+        # Fallback recommendations
+        return [
+            {
+                "test_name": "Complete Blood Count (CBC)",
+                "rationale": "Basic screening for systemic conditions",
+                "urgency": "routine",
+                "estimated_cost": 50.0
+            },
+            {
+                "test_name": "Comprehensive Metabolic Panel", 
+                "rationale": "Assess organ function and metabolic status",
+                "urgency": "routine",
+                "estimated_cost": 75.0
+            }
+        ]
+    
+    def _calculate_priority_score(self, discriminative_value: DiscriminativeValue, 
+                                 redundancy: RedundancyAssessment, stepwise: StepwiseReasoning, 
+                                 cost: float) -> float:
+        """Calculate overall priority score for test recommendation"""
+        
+        # Discriminative value component (40% weight)
+        discriminative_score = discriminative_value.diagnostic_yield_score * 0.4
+        
+        # Non-redundancy component (30% weight)  
+        redundancy_score = redundancy.incremental_value * 0.3
+        
+        # Cost-effectiveness component (20% weight)
+        # Normalize cost (assume $1000 as high cost reference)
+        cost_effectiveness = max(0, 1.0 - (cost / 1000.0)) * 0.2
+        
+        # Accessibility/tier component (10% weight)
+        tier_multiplier = {
+            "first_line": 1.0,
+            "second_line": 0.8, 
+            "third_line": 0.6,
+            "specialized": 0.7
         }
+        tier_score = tier_multiplier.get(stepwise.diagnostic_tier, 0.5) * 0.1
+        
+        total_score = discriminative_score + redundancy_score + cost_effectiveness + tier_score
+        return min(total_score, 1.0)
+    
+    def _apply_stepwise_filtering(self, scored_tests: List[TestRecommendationItem]) -> List[TestRecommendationItem]:
+        """Apply stepwise diagnostic approach filtering"""
+        
+        # Sort by discriminative value and cost effectiveness
+        scored_tests.sort(key=lambda x: (x.discriminative_value.diagnostic_yield_score, -x.priority), reverse=True)
+        
+        # Group by diagnostic tier
+        tier_groups = {
+            "first_line": [],
+            "second_line": [], 
+            "third_line": [],
+            "specialized": []
+        }
+        
+        for test in scored_tests:
+            tier = test.stepwise_reasoning.diagnostic_tier if test.stepwise_reasoning else "specialized"
+            tier_groups[tier].append(test)
+        
+        # Apply stepwise logic
+        final_recommendations = []
+        
+        # Always include top first-line tests
+        final_recommendations.extend(tier_groups["first_line"][:3])
+        
+        # Include second-line tests if first-line tests are high-value
+        if len(tier_groups["first_line"]) > 0 and tier_groups["first_line"][0].discriminative_value.diagnostic_yield_score > 0.7:
+            final_recommendations.extend(tier_groups["second_line"][:2])
+        
+        # Include specialized tests if highly discriminative
+        specialized_high_value = [t for t in tier_groups["specialized"] if t.discriminative_value.diagnostic_yield_score > 0.8]
+        final_recommendations.extend(specialized_high_value[:1])
+        
+        # Remove high-redundancy tests
+        final_recommendations = [t for t in final_recommendations 
+                               if t.redundancy_assessment and t.redundancy_assessment.redundancy_score < 0.8]
+        
+        return final_recommendations[:3]  # Limit to top 3 recommendations per model constraints
+    
+    def _generate_comprehensive_reasoning(self, recommendations: List[TestRecommendationItem], 
+                                        hypotheses: List[DiagnosticHypothesis]) -> str:
+        """Generate comprehensive reasoning for test selection"""
+        
+        if not recommendations:
+            return "No suitable test recommendations could be generated based on current hypotheses."
+        
+        reasoning_parts = []
+        
+        # Overall approach
+        reasoning_parts.append("Test selection using discriminative value scoring and stepwise diagnostic approach:")
+        
+        # Tier-based reasoning
+        tiers = {}
+        for test in recommendations:
+            tier = test.stepwise_reasoning.diagnostic_tier if test.stepwise_reasoning else "specialized"
+            if tier not in tiers:
+                tiers[tier] = []
+            tiers[tier].append(test)
+        
+        for tier, tests in tiers.items():
+            reasoning_parts.append(f"\n{tier.replace('_', ' ').title()} tests:")
+            for test in tests:
+                score_info = f"(priority: {test.priority}, discrimination: {test.discriminative_value.diagnostic_yield_score:.2f})"
+                reasoning_parts.append(f"  - {test.test_name}: {test.rationale} {score_info}")
+        
+        # Redundancy and discrimination insights
+        high_discrimination = [t for t in recommendations 
+                             if t.discriminative_value and t.discriminative_value.diagnostic_yield_score > 0.7]
+        if high_discrimination:
+            reasoning_parts.append(f"\nHighly discriminative tests: {', '.join([t.test_name for t in high_discrimination])}")
+        
+        # Cost considerations
+        total_cost = sum(t.estimated_cost for t in recommendations)
+        reasoning_parts.append(f"\nTotal estimated cost: ${total_cost:.2f}")
+        
+        return " ".join(reasoning_parts)
+    
+    def _calculate_recommendation_confidence(self, recommendations: List[TestRecommendationItem], 
+                                          hypotheses: List[DiagnosticHypothesis]) -> float:
+        """Calculate confidence in the test recommendations"""
+        
+        if not recommendations:
+            return 0.1
+        
+        # Factor in hypothesis quality
+        hypothesis_confidence = sum(h.probability for h in hypotheses[:3]) / 3 if hypotheses else 0.5
+        
+        # Factor in test quality (lower priority number = higher priority)
+        avg_priority_score = 1.0 - (sum(t.priority for t in recommendations) / len(recommendations) / 3.0)
+        
+        # Factor in discriminative value
+        avg_discriminative = 0.5
+        if recommendations[0].discriminative_value:
+            discriminative_scores = [t.discriminative_value.diagnostic_yield_score for t in recommendations 
+                                   if t.discriminative_value]
+            if discriminative_scores:
+                avg_discriminative = sum(discriminative_scores) / len(discriminative_scores)
+        
+        # Combined confidence
+        combined_confidence = (hypothesis_confidence * 0.4 + avg_priority_score * 0.4 + avg_discriminative * 0.2)
+        return min(combined_confidence, 0.95)
+    
+    def _generate_stepwise_strategy(self, recommendations: List[TestRecommendationItem]) -> str:
+        """Generate stepwise strategy explanation"""
+        if not recommendations:
+            return "No stepwise strategy available due to lack of recommendations."
+        
+        tiers = {}
+        for test in recommendations:
+            tier = test.stepwise_reasoning.diagnostic_tier
+            if tier not in tiers:
+                tiers[tier] = []
+            tiers[tier].append(test.test_name)
+        
+        strategy_parts = []
+        if "first_line" in tiers:
+            strategy_parts.append(f"First-line tests: {', '.join(tiers['first_line'])} - immediate accessibility")
+        if "second_line" in tiers:
+            strategy_parts.append(f"Second-line tests: {', '.join(tiers['second_line'])} - if first-line inconclusive")
+        if "specialized" in tiers:
+            strategy_parts.append(f"Specialized tests: {', '.join(tiers['specialized'])} - for specific discrimination")
+        
+        return "; ".join(strategy_parts) if strategy_parts else "Standard diagnostic approach following clinical guidelines"
+    
+    def _generate_redundancy_analysis(self, recommendations: List[TestRecommendationItem]) -> str:
+        """Generate redundancy analysis explanation"""
+        if not recommendations:
+            return "No redundancy analysis available."
+        
+        redundant_tests = [t for t in recommendations if t.redundancy_assessment.redundancy_score > 0.3]
+        non_redundant = len(recommendations) - len(redundant_tests)
+        
+        if redundant_tests:
+            return f"Minimal redundancy detected: {len(redundant_tests)} tests have moderate overlap, {non_redundant} provide unique information"
+        else:
+            return f"All {len(recommendations)} recommended tests provide complementary diagnostic information with minimal overlap"
+    
+    def _generate_cost_optimization_notes(self, recommendations: List[TestRecommendationItem]) -> str:
+        """Generate cost optimization notes"""
+        if not recommendations:
+            return "No cost optimization analysis available."
+        
+        total_cost = sum(t.estimated_cost for t in recommendations if t.estimated_cost)
+        avg_discrimination = sum(t.discriminative_value.diagnostic_yield_score for t in recommendations) / len(recommendations)
+        
+        cost_tier_counts = {}
+        for test in recommendations:
+            tier = test.stepwise_reasoning.cost_tier
+            cost_tier_counts[tier] = cost_tier_counts.get(tier, 0) + 1
+        
+        notes = f"Total cost ~${total_cost:.0f}, avg discrimination {avg_discrimination:.2f}. "
+        notes += f"Distribution: {', '.join([f'{k}: {v}' for k, v in cost_tier_counts.items()])}"
+        
+        return notes
+    
+    def add_performed_test(self, test_name: str):
+        """Add a test to the performed tests list to avoid redundancy"""
+        if test_name not in self.performed_tests:
+            self.performed_tests.append(test_name)
 
 class DrChallenger(BaseSpecializedAgent):
     """

@@ -70,9 +70,33 @@ class MarkdownLogger:
         self.md_content.append(md_code + "\n")
     
     def log_agent_json(self, timestamp, agent_role, content):
-        """Special formatting for agent JSON communications"""
+        """Special formatting for agent JSON communications with enhanced test selection display"""
         print(f"   [{timestamp}] {agent_role}:")
-        print(f"   {content}")
+        
+        # Enhanced display for Dr. Test-Chooser structured output
+        if agent_role == "Dr. Test-Chooser" and self._is_structured_json(content):
+            try:
+                import json
+                parsed = json.loads(content)
+                if "recommended_tests" in parsed:
+                    print(f"   📋 Recommended Tests: {len(parsed['recommended_tests'])}")
+                    for i, test in enumerate(parsed['recommended_tests'], 1):
+                        print(f"     {i}. {test.get('test_name', 'Unknown Test')}")
+                        print(f"        Rationale: {test.get('rationale', 'No rationale')[:80]}...")
+                        if test.get('discriminative_value'):
+                            disc_score = test['discriminative_value'].get('diagnostic_yield_score', 0)
+                            print(f"        Discriminative Value: {disc_score:.3f}")
+                        if test.get('estimated_cost'):
+                            print(f"        Cost: ${test['estimated_cost']:.2f}")
+                    
+                    if parsed.get('cost_optimization_notes'):
+                        print(f"   💰 Cost Summary: {parsed['cost_optimization_notes']}")
+                else:
+                    print(f"   {content}")
+            except (json.JSONDecodeError, KeyError):
+                print(f"   {content}")
+        else:
+            print(f"   {content}")
         
         # For markdown, ensure the JSON block starts on a new line
         # Check if content already starts with ```json to avoid duplicates
@@ -80,6 +104,7 @@ class MarkdownLogger:
             self.md_content.append(f"**[{timestamp}] {agent_role}:**\n\n{content}\n\n")
         else:
             self.md_content.append(f"**[{timestamp}] {agent_role}:**\n\n```json\n{content}\n```\n\n")
+
     
     def log_action(self, round_num, action_type, action_data):
         """Log diagnostic actions taken in each round"""
@@ -162,6 +187,15 @@ class MarkdownLogger:
         self.log_table_row(*headers)
         separator = "|" + "|".join([" --- " for _ in headers]) + "|"
         self.md_content.append(separator + "\n")
+    
+    def _is_structured_json(self, content):
+        """Check if content is valid JSON"""
+        try:
+            import json
+            json.loads(content)
+            return True
+        except (json.JSONDecodeError, TypeError):
+            return False
     
     def save_markdown(self):
         """Save markdown content to file"""
