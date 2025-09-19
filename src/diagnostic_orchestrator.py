@@ -77,18 +77,19 @@ class TestRecommendations(BaseModel):
     reasoning: str = Field(..., min_length=10, description="Overall test selection reasoning")
 
 class ChallengeItem(BaseModel):
-    """Individual challenge to current thinking"""
+    """Individual challenge to current thinking with explicit cognitive bias identification"""
     target_hypothesis: str = Field(..., min_length=1, description="Hypothesis being challenged")
-    challenge_type: Literal["anchoring_bias", "contradictory_evidence", "alternative_explanation", "cognitive_bias"] = Field(..., description="Type of challenge")
+    challenge_type: Literal["anchoring_bias", "confirmation_bias", "availability_bias", "representativeness_bias", 
+                           "contradictory_evidence", "alternative_explanation", "premature_closure"] = Field(..., description="Type of cognitive bias or challenge")
     reasoning: str = Field(..., min_length=10, description="Detailed challenge reasoning")
     alternative_hypothesis: Optional[str] = Field(None, description="Proposed alternative if applicable")
 
 class ChallengeResponse(BaseModel):
-    """Structured output from Dr. Challenger"""
-    challenges: List[ChallengeItem] = Field(default_factory=list, max_items=5, description="List of challenges raised")
+    """Enhanced structured output from Dr. Challenger with explicit bias detection"""
+    challenges: List[ChallengeItem] = Field(default_factory=list, max_items=5, description="List of challenges raised with specific bias types")
     falsifying_tests: List[str] = Field(default_factory=list, max_items=3, description="Tests that could disprove leading diagnosis")
     overlooked_possibilities: List[str] = Field(default_factory=list, max_items=3, description="Potentially missed diagnoses")
-    cognitive_bias_warnings: str = Field(..., min_length=5, description="Warnings about reasoning errors")
+    cognitive_bias_warnings: str = Field(..., min_length=5, description="Overall warnings about reasoning errors and biases")
 
 class CostAnalysisItem(BaseModel):
     """Individual cost analysis for a test"""
@@ -870,8 +871,7 @@ Based on the current hypotheses and any previous panel discussions, select the m
 
 class DrChallenger(BaseSpecializedAgent):
     """
-    Dr. Challenger - Acts as devil's advocate, identifies anchoring bias,
-    highlights contradictory evidence
+    Dr. Challenger - Enhanced cognitive bias detection specialist and devil's advocate
     """
     
     def __init__(self, client: AsyncOpenAI):
@@ -881,55 +881,81 @@ class DrChallenger(BaseSpecializedAgent):
                         current_hypotheses: List[DiagnosticHypothesis],
                         session: CaseExecutionSession) -> Dict[str, Any]:
         
-        system_prompt = """You are Dr. Challenger, the devil's advocate who prevents diagnostic errors.
+        system_prompt = """You are Dr. Challenger, an expert in cognitive bias detection and diagnostic error prevention. Your critical role is to identify reasoning errors and challenge assumptions that could lead to misdiagnosis.
 
-Your role:
-1. Identify potential anchoring bias in current hypotheses
-2. Highlight contradictory evidence that doesn't fit leading diagnoses
-3. Propose alternative diagnoses that might be overlooked
-4. Suggest tests that could falsify current leading diagnosis
-5. Challenge assumptions and cognitive shortcuts
+Core responsibilities:
+- Identify specific cognitive biases affecting current reasoning (anchoring, confirmation, availability, representativeness)
+- Highlight contradictory evidence that doesn't support leading hypotheses
+- Propose alternative diagnoses that may be overlooked due to bias
+- Suggest falsifying tests that could disprove current leading diagnosis
+- Challenge premature closure and ensure thorough differential consideration
+- Assess overall bias risk in the diagnostic reasoning process
 
-Format your response as JSON:
+Cognitive Bias Expertise:
+- Anchoring Bias: Over-reliance on first information received or early hypotheses
+- Confirmation Bias: Seeking evidence that confirms preconceptions while ignoring contradictory data
+- Availability Bias: Judging probability by ease of recalling similar cases
+- Representativeness Bias: Assuming symptoms match typical presentation patterns
+- Premature Closure: Accepting diagnosis before adequate verification
+
+Approach:
+- Systematically examine each hypothesis for cognitive bias vulnerabilities
+- Identify evidence that contradicts or doesn't fit current hypotheses
+- Consider rare but serious diagnoses that may be dismissed too quickly
+- Challenge assumptions and think about alternative explanations
+- Propose specific tests that could definitively rule out leading diagnoses
+
+Output format:
 {
     "challenges": [
         {
-            "target_hypothesis": "hypothesis being challenged",
-            "challenge_type": "anchoring bias / contradictory evidence / alternative explanation",
-            "reasoning": "detailed challenge reasoning",
-            "alternative_hypothesis": "proposed alternative if applicable"
+            "target_hypothesis": "specific hypothesis being challenged",
+            "challenge_type": "anchoring_bias|confirmation_bias|availability_bias|representativeness_bias|contradictory_evidence|alternative_explanation|premature_closure",
+            "reasoning": "detailed explanation of the bias or challenge",
+            "alternative_hypothesis": "proposed alternative diagnosis if applicable"
         }
     ],
-    "falsifying_tests": ["tests that could disprove current leading diagnosis"],
-    "overlooked_possibilities": ["diagnoses that might be missed"],
-    "cognitive_bias_warnings": "warnings about potential reasoning errors"
+    "falsifying_tests": ["specific tests that could disprove leading diagnosis"],
+    "overlooked_possibilities": ["diagnoses that might be missed due to bias"],
+    "cognitive_bias_warnings": "overall assessment of reasoning errors and biases present"
 }"""
 
         hypotheses_text = "\n".join([f"- {h.condition} ({h.probability:.2f}): {h.reasoning}" 
                                    for h in current_hypotheses[:3]]) if current_hypotheses else "No hypotheses to challenge."
         findings_text = "\n".join(previous_findings) if previous_findings else "No findings yet."
         
-        user_message = f"""
-Case: {case_info}
+        # Calculate current cost for context
+        current_cost = session.total_cost if hasattr(session, 'total_cost') else 0
+        
+        user_message = f"""Case: {case_info}
 
-Current Leading Hypotheses:
+Case state: Round {session.current_round}, {len(previous_findings)} findings accumulated
+Accumulated findings: {findings_text}
+
+Current hypotheses to challenge:
 {hypotheses_text}
 
-Accumulated Findings:
-{findings_text}
+Current cumulative cost: ${current_cost:.2f}
 
-Challenge these hypotheses. What are we potentially missing or overlooking?
-"""
+Systematically challenge current reasoning and identify cognitive biases. Focus on:
+1. What biases might be affecting the current hypotheses?
+2. What contradictory evidence is being overlooked?
+3. What alternative diagnoses should be considered?
+4. What tests could definitively rule out the leading diagnosis?
+
+Be rigorous and challenge assumptions and biases in order to drive towards improved diagnostic accuracy."""
 
         response = await self._call_llm(system_prompt, user_message)
         session.add_agent_message(self.role_name, "challenge", response)
         
         try:
             import re
+            import json
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group())
-        except:
+        except Exception as e:
+            # Fallback parsing if JSON fails
             pass
             
         return {
