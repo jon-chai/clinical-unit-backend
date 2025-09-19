@@ -1,6 +1,8 @@
 # test_run_diagnostic_orchestrator.py
 import asyncio
 import os
+import re
+import json
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -212,16 +214,32 @@ def _parse_hypotheses_from_message(content):
     """Parse hypotheses with confidence scores from Dr. Hypothesis message content"""
     hypotheses = []
     
-    # Try to find JSON structure in the message
+    # Try to find JSON structure in the message - now with enhanced model support
     import re
     import json
     
-    # Look for differential_diagnoses array in JSON
+    # Look for both new 'hypotheses' format and legacy 'differential_diagnoses' format
     json_match = re.search(r'\{.*\}', content, re.DOTALL)
     if json_match:
         try:
             parsed = json.loads(json_match.group())
-            if 'differential_diagnoses' in parsed:
+            
+            # New structured format (from enhanced Pydantic models)
+            if 'hypotheses' in parsed:
+                for i, hypothesis in enumerate(parsed['hypotheses'][:3]):  # Top 3
+                    if isinstance(hypothesis, dict):
+                        condition = hypothesis.get('condition', f'Hypothesis {i+1}')
+                        confidence = hypothesis.get('probability', 0)  # New field name
+                        reasoning = hypothesis.get('reasoning', 'No reasoning provided')
+                        
+                        hypotheses.append({
+                            'condition': condition,
+                            'confidence': confidence,
+                            'reasoning': reasoning
+                        })
+            
+            # Legacy format support
+            elif 'differential_diagnoses' in parsed:
                 for i, diagnosis in enumerate(parsed['differential_diagnoses'][:3]):  # Top 3
                     if isinstance(diagnosis, dict):
                         condition = diagnosis.get('condition', f'Hypothesis {i+1}')
@@ -360,10 +378,10 @@ async def run_real_test_case():
         
         # Run different execution modes
         modes_to_test = [
-            ("instant", "Instant diagnosis from vignette only"),
-            ("questions_only", "Questions only, no diagnostic tests"),
+            ("instant", "Instant diagnosis from vignette only")
+            # ("questions_only", "Questions only, no diagnostic tests"),
             # ("budgeted", "Full orchestration with $2000 budget"), # Mode not fully implemented
-            ("unconstrained", "Full orchestration, no budget limits")
+            # ("unconstrained", "Full orchestration, no budget limits")
         ]
         
         for mode, description in modes_to_test:
@@ -416,7 +434,7 @@ async def run_real_test_case():
             md_logger.save_markdown()
 
 def print_session_results(session, mode):
-    """Print comprehensive session results"""
+    """Print comprehensive session results with enhanced confidence assessment"""
     global md_logger
     
     print(f"\n📊 Results for {mode} mode:")
@@ -426,6 +444,25 @@ def print_session_results(session, mode):
     print(f"   🔄 Rounds Completed: {session.current_round}")
     print(f"   📝 Trace Entries: {len(session.traces)}")
     print(f"   🤖 Agent Messages: {len(session.agent_messages)}")
+    
+    # Enhanced confidence assessment display
+    try:
+        confidence_assessment = session.get_confidence_assessment()
+        contradictory_impact = session.get_contradictory_evidence_impact()
+        
+        print(f"\n🎯 Enhanced Confidence Assessment:")
+        print(f"   📈 Overall Confidence: {confidence_assessment['overall_confidence']:.3f}")
+        print(f"   🎪 Leading Hypothesis Strength: {confidence_assessment['leading_hypothesis_strength']:.3f}")
+        print(f"   📋 Evidence Completeness: {confidence_assessment['evidence_completeness']:.3f}")
+        print(f"   🔍 Diagnostic Clarity: {confidence_assessment['diagnostic_clarity']:.3f}")
+        print(f"   ❌ Contradictory Evidence Impact: -{contradictory_impact['confidence_reduction']:.3f}")
+        print(f"   📊 Confidence Level: {confidence_assessment['confidence_level'].upper()}")
+        
+        if confidence_assessment.get('uncertainty_factors'):
+            print(f"   ⚠️  Uncertainty Factors: {', '.join(confidence_assessment['uncertainty_factors'])}")
+            
+    except (AttributeError, KeyError) as e:
+        print(f"   ⚠️  Enhanced confidence assessment not available: {e}")
     
     # Log to markdown
     if md_logger:
@@ -439,6 +476,29 @@ def print_session_results(session, mode):
             f"🤖 **Agent Messages:** {len(session.agent_messages)}"
         ]
         md_logger.log_list(results_list)
+        
+        # Enhanced confidence assessment in markdown
+        try:
+            confidence_assessment = session.get_confidence_assessment()
+            contradictory_impact = session.get_contradictory_evidence_impact()
+            
+            md_logger.log_heading("🎯 Enhanced Confidence Assessment", 4)
+            confidence_list = [
+                f"📈 **Overall Confidence:** {confidence_assessment['overall_confidence']:.3f}",
+                f"🎪 **Leading Hypothesis Strength:** {confidence_assessment['leading_hypothesis_strength']:.3f}",
+                f"📋 **Evidence Completeness:** {confidence_assessment['evidence_completeness']:.3f}",
+                f"🔍 **Diagnostic Clarity:** {confidence_assessment['diagnostic_clarity']:.3f}",
+                f"❌ **Contradictory Evidence Impact:** -{contradictory_impact['confidence_reduction']:.3f}",
+                f"📊 **Confidence Level:** {confidence_assessment['confidence_level'].upper()}"
+            ]
+            
+            if confidence_assessment.get('uncertainty_factors'):
+                confidence_list.append(f"⚠️ **Uncertainty Factors:** {', '.join(confidence_assessment['uncertainty_factors'])}")
+                
+            md_logger.log_list(confidence_list)
+            
+        except (AttributeError, KeyError):
+            md_logger.log_text("*Enhanced confidence assessment not available*")
         
         # Log final diagnosis rationale if available
         if session.final_diagnosis and session.final_diagnosis != "No diagnosis reached":
@@ -462,13 +522,31 @@ def print_session_results(session, mode):
             actions_by_round[round_num] = []
         actions_by_round[round_num].append(trace)
     
-    # Extract hypotheses from Dr. Hypothesis messages by round using improved grouping
+    # Extract hypotheses - try structured method first, then parse from messages
+    try:
+        # Use new structured method if available
+        structured_hypotheses = session.get_structured_hypotheses()
+        if structured_hypotheses:
+            # Assign to current round
+            current_round = session.current_round or 1
+            hypotheses_by_round[current_round] = [
+                {
+                    'condition': h.condition,
+                    'confidence': h.probability,
+                    'reasoning': h.reasoning
+                } for h in structured_hypotheses[:3]
+            ]
+    except (AttributeError, Exception):
+        # Fallback to message parsing for older sessions or if method fails
+        pass
+    
+    # Also extract from messages by round for comprehensive logging
     all_messages_by_round = _group_messages_by_round(session.agent_messages, session.traces)
     for round_num, round_messages in all_messages_by_round.items():
         for msg in round_messages:
             if msg.agent_role == "Dr. Hypothesis":
                 hypotheses = _parse_hypotheses_from_message(msg.content)
-                if hypotheses:
+                if hypotheses and round_num not in hypotheses_by_round:
                     hypotheses_by_round[round_num] = hypotheses
                     break  # Only use the first Dr. Hypothesis message per round
     

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, validator
 import openai
 from openai import AsyncOpenAI
 # from dotenv import load_dotenv
@@ -32,6 +32,132 @@ from openai import AsyncOpenAI
 # Import cost estimation capabilities
 from cost_estimator import cost_estimator, TestCost
 
+# Enhanced Pydantic models for structured agent outputs with validation
+from typing import Literal
+
+class BayesianUpdate(BaseModel):
+    """Structured Bayesian reasoning for probability updates"""
+    prior_probability: float = Field(..., ge=0.0, le=1.0, description="Prior probability before evidence")
+    posterior_probability: float = Field(..., ge=0.0, le=1.0, description="Updated probability after evidence")
+    likelihood_ratio: float = Field(..., gt=0.0, description="Likelihood ratio of evidence")
+    evidence_weight: float = Field(..., ge=0.0, le=1.0, description="Strength/reliability of evidence")
+    reasoning: str = Field(..., min_length=20, description="Detailed Bayesian reasoning explanation")
+
+class EvidenceItem(BaseModel):
+    """Individual piece of evidence with impact assessment"""
+    description: str = Field(..., min_length=5, description="Evidence description")
+    impact_type: Literal["supporting", "contradictory", "neutral"] = Field(..., description="Evidence impact type")
+    strength: float = Field(..., ge=0.0, le=1.0, description="Evidence strength (0=weak, 1=strong)")
+    reliability: float = Field(..., ge=0.0, le=1.0, description="Evidence reliability (0=unreliable, 1=definitive)")
+    source: str = Field(..., min_length=3, description="Evidence source (clinical, lab, imaging, etc.)")
+
+class HypothesisItem(BaseModel):
+    """Individual hypothesis with validated probability and enhanced Bayesian tracking"""
+    condition: str = Field(..., min_length=1, description="Medical condition name")
+    probability: float = Field(..., ge=0.0, le=1.0, description="Current probability between 0 and 1")
+    reasoning: str = Field(..., min_length=10, description="Detailed clinical reasoning")
+    supporting_evidence: List[EvidenceItem] = Field(default_factory=list, description="Supporting evidence with impact")
+    contradictory_evidence: List[EvidenceItem] = Field(default_factory=list, description="Contradictory evidence with impact")
+    bayesian_updates: List[BayesianUpdate] = Field(default_factory=list, description="History of Bayesian updates")
+    confidence_factors: Dict[str, float] = Field(default_factory=dict, description="Factors affecting confidence")
+
+class ConfidenceAssessment(BaseModel):
+    """Numerical confidence assessment with detailed factors"""
+    overall_confidence: float = Field(..., ge=0.0, le=1.0, description="Overall diagnostic confidence")
+    leading_hypothesis_strength: float = Field(..., ge=0.0, le=1.0, description="Strength of leading hypothesis")
+    evidence_completeness: float = Field(..., ge=0.0, le=1.0, description="Completeness of available evidence")
+    diagnostic_clarity: float = Field(..., ge=0.0, le=1.0, description="Clarity of diagnostic picture")
+    uncertainty_factors: List[str] = Field(default_factory=list, description="Factors contributing to uncertainty")
+    confidence_level: Literal["low", "medium", "high"] = Field(..., description="Categorical confidence level")
+
+class HypothesisUpdate(BaseModel):
+    """Enhanced structured output from Dr. Hypothesis with advanced Bayesian reasoning"""
+    hypotheses: List[HypothesisItem] = Field(..., max_items=5, description="Top hypotheses ranked by probability")
+    bayesian_updates: str = Field(..., min_length=10, description="Explanation of probability updates")
+    confidence_assessment: ConfidenceAssessment = Field(..., description="Detailed confidence assessment")
+    differential_reasoning: str = Field(..., min_length=20, description="Reasoning for differential diagnosis ranking")
+    key_discriminating_features: List[str] = Field(default_factory=list, max_items=5, description="Features that distinguish between hypotheses")
+    
+    @validator('hypotheses')
+    def validate_probabilities_sum(cls, v):
+        """Ensure probabilities are reasonable (don't need to sum to 1 for differential diagnosis)"""
+        if len(v) == 0:
+            raise ValueError("At least one hypothesis must be provided")
+        return v
+    
+    @validator('confidence_assessment')
+    def validate_confidence_consistency(cls, v, values):
+        """Ensure confidence levels are consistent with hypothesis probabilities"""
+        if 'hypotheses' in values and values['hypotheses']:
+            max_prob = max(h.probability for h in values['hypotheses'])
+            if max_prob > 0.8 and v.confidence_level == "low":
+                raise ValueError("High probability hypotheses inconsistent with low confidence")
+            if max_prob < 0.3 and v.confidence_level == "high":
+                raise ValueError("Low probability hypotheses inconsistent with high confidence")
+        return v
+
+class TestRecommendationItem(BaseModel):
+    """Individual test recommendation with validation"""
+    test_name: str = Field(..., min_length=2, description="Specific diagnostic test name")
+    rationale: str = Field(..., min_length=10, description="Clinical rationale for test")
+    priority: int = Field(..., ge=1, le=3, description="Priority level (1=highest, 3=lowest)")
+    discriminative_value: str = Field(..., min_length=5, description="How test differentiates between diagnoses")
+    estimated_cost: Optional[float] = Field(None, ge=0, description="Estimated cost in USD")
+
+class TestRecommendations(BaseModel):
+    """Structured output from Dr. Test-Chooser"""
+    recommended_tests: List[TestRecommendationItem] = Field(..., max_items=3, description="Up to 3 recommended tests")
+    reasoning: str = Field(..., min_length=10, description="Overall test selection strategy")
+
+class ChallengeItem(BaseModel):
+    """Individual challenge to current thinking"""
+    target_hypothesis: str = Field(..., min_length=1, description="Hypothesis being challenged")
+    challenge_type: Literal["anchoring_bias", "contradictory_evidence", "alternative_explanation", "cognitive_bias"] = Field(..., description="Type of challenge")
+    reasoning: str = Field(..., min_length=10, description="Detailed challenge reasoning")
+    alternative_hypothesis: Optional[str] = Field(None, description="Proposed alternative if applicable")
+
+class ChallengeResponse(BaseModel):
+    """Structured output from Dr. Challenger"""
+    challenges: List[ChallengeItem] = Field(default_factory=list, max_items=5, description="List of challenges raised")
+    falsifying_tests: List[str] = Field(default_factory=list, max_items=3, description="Tests that could disprove leading diagnosis")
+    overlooked_possibilities: List[str] = Field(default_factory=list, max_items=3, description="Potentially missed diagnoses")
+    cognitive_bias_warnings: str = Field(..., min_length=5, description="Warnings about reasoning errors")
+
+class CostAnalysisItem(BaseModel):
+    """Individual cost analysis for a test"""
+    test_name: str = Field(..., min_length=1, description="Test being analyzed")
+    approval_status: Literal["approved", "conditional", "rejected"] = Field(..., description="Stewardship decision")
+    reasoning: str = Field(..., min_length=10, description="Cost-benefit analysis reasoning")
+    cheaper_alternative: Optional[str] = Field(None, description="Suggested cheaper alternative")
+    cost_category: Literal["low", "moderate", "high", "very_high"] = Field(..., description="Cost categorization")
+
+class StewardshipReview(BaseModel):
+    """Structured output from Dr. Stewardship"""
+    cost_analysis: List[CostAnalysisItem] = Field(default_factory=list, description="Analysis of proposed tests")
+    budget_recommendation: Literal["continue", "proceed_with_caution", "stop_and_reassess"] = Field(..., description="Budget guidance")
+    stewardship_notes: str = Field(..., min_length=10, description="Overall cost-consciousness guidance")
+
+class QualityGap(BaseModel):
+    """Individual quality gap identified"""
+    gap_type: Literal["missing_information", "logical_inconsistency", "incomplete_workup", "safety_concern"] = Field(..., description="Type of gap")
+    description: str = Field(..., min_length=5, description="Description of the gap")
+    recommendation: str = Field(..., min_length=5, description="Suggested action to address gap")
+
+class ChecklistAssessment(BaseModel):
+    """Structured output from Dr. Checklist"""
+    quality_score: int = Field(..., ge=1, le=10, description="Overall quality score (1-10)")
+    identified_gaps: List[QualityGap] = Field(default_factory=list, max_items=5, description="Quality gaps identified")
+    completeness_assessment: str = Field(..., min_length=10, description="Assessment of diagnostic completeness")
+    safety_concerns: List[str] = Field(default_factory=list, max_items=3, description="Patient safety concerns")
+
+class ConsensusDecision(BaseModel):
+    """Structured consensus decision from panel"""
+    consensus_action: Literal["ask_questions", "order_tests", "make_diagnosis"] = Field(..., description="Decided action")
+    action_content: Dict[str, Any] = Field(..., description="Content of the action (questions, tests, or diagnosis)")
+    reasoning: str = Field(..., min_length=10, description="Consensus reasoning")
+    panel_synthesis: str = Field(..., min_length=10, description="Synthesis of all panel input")
+    confidence_level: float = Field(..., ge=0.0, le=1.0, description="Consensus confidence")
+
 # Trace and execution models
 class ActionType(str, Enum):
     """Types of actions the diagnostic panel can take after deliberation"""
@@ -41,21 +167,41 @@ class ActionType(str, Enum):
 
 @dataclass
 class DiagnosticHypothesis:
-    """Represents a diagnostic hypothesis with probability"""
+    """Represents a diagnostic hypothesis with probability validation"""
     condition: str
     probability: float
     reasoning: str
     supporting_evidence: List[str] = field(default_factory=list)
     contradictory_evidence: List[str] = field(default_factory=list)
+    
+    def __post_init__(self):
+        """Validate probability is in valid range"""
+        if not 0.0 <= self.probability <= 1.0:
+            raise ValueError(f"Probability must be between 0.0 and 1.0, got {self.probability}")
+        if not self.condition.strip():
+            raise ValueError("Condition name cannot be empty")
+        if not self.reasoning.strip():
+            raise ValueError("Reasoning cannot be empty")
 
 @dataclass
 class TestRecommendation:
-    """Represents a recommended diagnostic test"""
+    """Represents a recommended diagnostic test with validation"""
     test_name: str
     rationale: str
     estimated_cost: Optional[float] = None
     priority: int = 1  # 1=highest, 3=lowest
     discriminative_value: str = ""
+    
+    def __post_init__(self):
+        """Validate test recommendation fields"""
+        if not self.test_name.strip():
+            raise ValueError("Test name cannot be empty")
+        if not self.rationale.strip():
+            raise ValueError("Rationale cannot be empty")
+        if not 1 <= self.priority <= 3:
+            raise ValueError(f"Priority must be between 1 and 3, got {self.priority}")
+        if self.estimated_cost is not None and self.estimated_cost < 0:
+            raise ValueError(f"Cost cannot be negative, got {self.estimated_cost}")
     
 @dataclass
 class AgentMessage:
@@ -79,13 +225,219 @@ class ExecutionTrace:
     structured_data: Optional[Dict[str, Any]] = None
     cost_impact: Optional[float] = None
 
+@dataclass
+class DiagnosticAction:
+    """Represents an action taken during diagnostic reasoning"""
+    action_type: str  # "ask_questions", "order_tests", "make_diagnosis"
+    content: Union[str, List[str]]
+    reasoning: str
+    round_number: int
+    timestamp: datetime = field(default_factory=datetime.now)
+    
+    def __str__(self) -> str:
+        """String representation for comparison in stagnation detection"""
+        content_str = str(self.content) if isinstance(self.content, str) else "|".join(self.content)
+        return f"{self.action_type}:{content_str}"
+
+@dataclass 
+class CaseState:
+    """Enhanced state management for diagnostic process with evidence tracking and stagnation detection"""
+    initial_case_info: str
+    evidence_log: List[str] = field(default_factory=list)
+    differential_diagnosis: Dict[str, float] = field(default_factory=dict)
+    tests_performed: List[str] = field(default_factory=list)
+    questions_asked: List[str] = field(default_factory=list)
+    cumulative_cost: float = 0.0
+    current_round: int = 0
+    action_history: List[DiagnosticAction] = field(default_factory=list)
+    
+    def add_evidence(self, evidence: str) -> None:
+        """Add new evidence to the case log"""
+        if evidence not in self.evidence_log:
+            self.evidence_log.append(evidence)
+    
+    def update_differential(self, diagnosis_dict: Dict[str, float]) -> None:
+        """Update the differential diagnosis probabilities"""
+        self.differential_diagnosis.update(diagnosis_dict)
+    
+    def add_test(self, test_name: str) -> None:
+        """Add a test to the performed tests list"""
+        if test_name not in self.tests_performed:
+            self.tests_performed.append(test_name)
+    
+    def add_question(self, question: str) -> None:
+        """Add a question to the asked questions list"""
+        if question not in self.questions_asked:
+            self.questions_asked.append(question)
+    
+    def is_stagnating(self, new_action: DiagnosticAction, lookback: int = 3) -> bool:
+        """Detect if the diagnostic process is stagnating by checking recent actions"""
+        if len(self.action_history) < lookback:
+            return False
+        
+        recent_actions = [str(action) for action in self.action_history[-lookback:]]
+        new_action_str = str(new_action)
+        
+        # Check if this action is too similar to recent actions
+        similar_count = sum(1 for action_str in recent_actions if action_str == new_action_str)
+        return similar_count >= 2
+    
+    def add_action(self, action: DiagnosticAction) -> None:
+        """Add an action to the history for stagnation detection"""
+        action.round_number = self.current_round
+        self.action_history.append(action)
+        
+        # Keep only last 10 actions to prevent memory bloat
+        if len(self.action_history) > 10:
+            self.action_history = self.action_history[-10:]
+    
+    def get_max_confidence(self) -> float:
+        """Get the highest confidence diagnosis probability"""
+        return max(self.differential_diagnosis.values()) if self.differential_diagnosis else 0.0
+    
+    def get_leading_diagnosis(self) -> str:
+        """Get the diagnosis with highest probability"""
+        if not self.differential_diagnosis:
+            return "No leading diagnosis"
+        return max(self.differential_diagnosis.items(), key=lambda x: x[1])[0]
+    
+    def summarize_evidence(self) -> str:
+        """Create a summary of all accumulated evidence"""
+        if not self.evidence_log:
+            return "No evidence accumulated yet."
+        return " | ".join(self.evidence_log[-5:])  # Last 5 pieces of evidence
+
+class BayesianReasoningHelper:
+    """Helper class for Bayesian probability calculations and reasoning"""
+    
+    @staticmethod
+    def calculate_posterior(prior: float, likelihood_ratio: float) -> float:
+        """Calculate posterior probability using Bayes' theorem with likelihood ratio"""
+        # P(H|E) = P(E|H) * P(H) / P(E)
+        # Using likelihood ratio: LR = P(E|H) / P(E|not H)
+        odds_prior = prior / (1 - prior) if prior < 1.0 else 1.0
+        odds_posterior = odds_prior * likelihood_ratio
+        posterior = odds_posterior / (1 + odds_posterior)
+        return min(max(posterior, 0.001), 0.999)  # Clamp between bounds
+    
+    @staticmethod
+    def estimate_likelihood_ratio(evidence_strength: float, evidence_type: str) -> float:
+        """Estimate likelihood ratio based on evidence strength and type"""
+        base_ratios = {
+            "pathognomonic": 20.0,  # Nearly diagnostic
+            "highly_specific": 10.0,  # Very strong evidence
+            "specific": 5.0,  # Strong evidence
+            "suggestive": 2.0,  # Moderate evidence
+            "nonspecific": 1.2,  # Weak evidence
+            "contradictory": 0.5,  # Evidence against
+            "neutral": 1.0  # No impact
+        }
+        base_lr = base_ratios.get(evidence_type, 2.0)
+        # Adjust by evidence strength
+        if base_lr > 1.0:
+            return 1.0 + (base_lr - 1.0) * evidence_strength
+        else:
+            return 1.0 - (1.0 - base_lr) * evidence_strength
+    
+    @staticmethod
+    def assess_confidence_level(max_probability: float, evidence_quality: float, 
+                               num_hypotheses: int) -> Tuple[str, float]:
+        """Assess confidence level based on probability and evidence quality"""
+        # Calculate base confidence from leading probability
+        prob_confidence = max_probability
+        
+        # Adjust for evidence quality
+        quality_factor = evidence_quality
+        
+        # Adjust for number of competing hypotheses
+        competition_factor = 1.0 - (num_hypotheses - 1) * 0.05  # Decrease with more hypotheses
+        competition_factor = max(competition_factor, 0.7)
+        
+        # Combined confidence
+        overall_confidence = prob_confidence * quality_factor * competition_factor
+        
+        # Categorical levels with thresholds
+        if overall_confidence >= 0.8:
+            return "high", overall_confidence
+        elif overall_confidence >= 0.5:
+            return "medium", overall_confidence
+        else:
+            return "low", overall_confidence
+    
+    @staticmethod
+    def calculate_evidence_weight(reliability: float, specificity: str, 
+                                 clinical_context: str = "general") -> float:
+        """Calculate overall evidence weight considering multiple factors"""
+        # Base weight from reliability
+        base_weight = reliability
+        
+        # Specificity multiplier
+        specificity_multipliers = {
+            "pathognomonic": 1.0,
+            "highly_specific": 0.9,
+            "moderately_specific": 0.7,
+            "nonspecific": 0.4,
+            "contradictory": 0.8  # High weight for contradictory evidence
+        }
+        
+        specificity_mult = specificity_multipliers.get(specificity, 0.6)
+        
+        # Context adjustment
+        context_adjustments = {
+            "emergency": 1.1,  # Higher weight in emergency settings
+            "outpatient": 0.9,  # Lower weight in outpatient settings
+            "icu": 1.0,
+            "general": 1.0
+        }
+        
+        context_adj = context_adjustments.get(clinical_context, 1.0)
+        
+        return min(base_weight * specificity_mult * context_adj, 1.0)
+
+@dataclass
+class DeliberationState:
+    """Structured state for panel deliberation coordination"""
+    hypothesis_analysis: str = ""
+    test_chooser_analysis: str = ""
+    challenger_analysis: str = ""
+    stewardship_analysis: str = ""
+    checklist_analysis: str = ""
+    consensus_reasoning: str = ""
+    stagnation_detected: bool = False
+    retry_count: int = 0
+    round_start_time: datetime = field(default_factory=datetime.now)
+    
+    def reset_for_new_round(self) -> None:
+        """Reset state for a new deliberation round"""
+        self.hypothesis_analysis = ""
+        self.test_chooser_analysis = ""
+        self.challenger_analysis = ""
+        self.stewardship_analysis = ""
+        self.checklist_analysis = ""
+        self.consensus_reasoning = ""
+        self.stagnation_detected = False
+        self.retry_count = 0
+        self.round_start_time = datetime.now()
+    
+    def has_all_agent_inputs(self) -> bool:
+        """Check if all required agent analyses are completed"""
+        return all([
+            self.hypothesis_analysis,
+            self.test_chooser_analysis,
+            self.challenger_analysis,
+            self.stewardship_analysis,
+            self.checklist_analysis
+        ])
+
 class CaseExecutionSession:
-    """Manages a single diagnostic case execution session"""
+    """Manages a single diagnostic case execution session with enhanced state tracking"""
     
     def __init__(self, case_id: str, initial_case_info: str):
         self.case_id = case_id
         self.session_id = str(uuid.uuid4())
         self.initial_case_info = initial_case_info
+        
+        # Legacy attributes for backward compatibility
         self.traces: List[ExecutionTrace] = []
         self.agent_messages: List[AgentMessage] = []
         self.current_round = 0
@@ -93,6 +445,14 @@ class CaseExecutionSession:
         self.final_diagnosis: Optional[str] = None
         self.confidence_score: Optional[float] = None
         self.created_at = datetime.now()
+        
+        # Enhanced state management
+        self.case_state = CaseState(
+            initial_case_info=initial_case_info,
+            current_round=0,
+            cumulative_cost=0.0
+        )
+        self.deliberation_state = DeliberationState()
         
     def add_trace(self, action_type: ActionType, actor: str, content: str, 
                   structured_data: Optional[Dict[str, Any]] = None, 
@@ -113,6 +473,18 @@ class CaseExecutionSession:
         
         if cost_impact:
             self.total_cost += cost_impact
+            # Keep case_state in sync
+            self.case_state.cumulative_cost += cost_impact
+            
+        # Create diagnostic action for stagnation detection
+        if action_type in [ActionType.ASK_QUESTIONS, ActionType.ORDER_TESTS, ActionType.MAKE_DIAGNOSIS]:
+            diagnostic_action = DiagnosticAction(
+                action_type=action_type.value,
+                content=content,
+                reasoning=f"Action by {actor}",
+                round_number=self.current_round
+            )
+            self.case_state.add_action(diagnostic_action)
             
     def add_agent_message(self, agent_role: str, message_type: str, content: str,
                          structured_data: Optional[Dict[str, Any]] = None):
@@ -129,6 +501,135 @@ class CaseExecutionSession:
     def increment_round(self):
         """Move to the next diagnostic round"""
         self.current_round += 1
+        # Keep case_state in sync
+        self.case_state.current_round = self.current_round
+        # Reset deliberation state for new round
+        self.deliberation_state.reset_for_new_round()
+    
+    def check_stagnation(self, proposed_action: DiagnosticAction) -> bool:
+        """Check if the proposed action would cause stagnation"""
+        return self.case_state.is_stagnating(proposed_action)
+    
+    def add_evidence(self, evidence: str) -> None:
+        """Add evidence to the case state"""
+        self.case_state.add_evidence(evidence)
+    
+    def update_differential_diagnosis(self, diagnosis_dict: Dict[str, float]) -> None:
+        """Update differential diagnosis probabilities"""
+        self.case_state.update_differential(diagnosis_dict)
+    
+    def get_leading_diagnosis_confidence(self) -> Tuple[str, float]:
+        """Get the leading diagnosis and its confidence"""
+        diagnosis = self.case_state.get_leading_diagnosis()
+        confidence = self.case_state.get_max_confidence()
+        return diagnosis, confidence
+    
+    def get_structured_hypotheses(self) -> List[DiagnosticHypothesis]:
+        """Extract structured hypotheses from agent messages with enhanced evidence tracking"""
+        hypotheses = []
+        for msg in reversed(self.agent_messages):
+            if msg.agent_role == "Dr. Hypothesis" and msg.structured_data:
+                try:
+                    hyp_data = msg.structured_data.get('hypotheses', [])
+                    for h in hyp_data:
+                        if isinstance(h, dict):
+                            # Enhanced evidence extraction with proper handling of new format
+                            supporting_evidence = []
+                            contradictory_evidence = []
+                            
+                            # Handle both old list format and new structured format
+                            supp_ev_data = h.get('supporting_evidence', [])
+                            for ev in supp_ev_data:
+                                if isinstance(ev, dict):
+                                    supporting_evidence.append(ev.get('description', str(ev)))
+                                else:
+                                    supporting_evidence.append(str(ev))
+                            
+                            contra_ev_data = h.get('contradictory_evidence', [])
+                            for ev in contra_ev_data:
+                                if isinstance(ev, dict):
+                                    contradictory_evidence.append(ev.get('description', str(ev)))
+                                else:
+                                    contradictory_evidence.append(str(ev))
+                            
+                            hypotheses.append(DiagnosticHypothesis(
+                                condition=h.get('condition', 'Unknown'),
+                                probability=float(h.get('probability', 0.0)),
+                                reasoning=h.get('reasoning', 'No reasoning'),
+                                supporting_evidence=supporting_evidence,
+                                contradictory_evidence=contradictory_evidence
+                            ))
+                    if hypotheses:
+                        return hypotheses[:3]  # Return top 3
+                except Exception:
+                    continue
+        return []
+    
+    def get_confidence_assessment(self) -> Dict[str, Any]:
+        """Extract latest confidence assessment from Dr. Hypothesis"""
+        for msg in reversed(self.agent_messages):
+            if msg.agent_role == "Dr. Hypothesis" and msg.structured_data:
+                confidence_data = msg.structured_data.get('confidence_assessment', {})
+                if confidence_data:
+                    return confidence_data
+                # Fallback to legacy format
+                confidence_level = msg.structured_data.get('confidence_level', 'medium')
+                return {
+                    "overall_confidence": 0.5,
+                    "leading_hypothesis_strength": 0.5,
+                    "evidence_completeness": 0.5,
+                    "diagnostic_clarity": 0.5,
+                    "uncertainty_factors": ["Legacy format"],
+                    "confidence_level": confidence_level
+                }
+        return {
+            "overall_confidence": 0.3,
+            "leading_hypothesis_strength": 0.3,
+            "evidence_completeness": 0.3,
+            "diagnostic_clarity": 0.3,
+            "uncertainty_factors": ["No assessment available"],
+            "confidence_level": "low"
+        }
+    
+    def get_contradictory_evidence_impact(self) -> Dict[str, Any]:
+        """Analyze impact of contradictory evidence on diagnostic confidence"""
+        contradictory_evidence = []
+        total_impact = 0.0
+        
+        for msg in reversed(self.agent_messages):
+            if msg.agent_role == "Dr. Hypothesis" and msg.structured_data:
+                hypotheses_data = msg.structured_data.get('hypotheses', [])
+                for hyp_data in hypotheses_data:
+                    if isinstance(hyp_data, dict):
+                        contra_ev_data = hyp_data.get('contradictory_evidence', [])
+                        for ev in contra_ev_data:
+                            if isinstance(ev, dict):
+                                contradictory_evidence.append({
+                                    "condition": hyp_data.get('condition', 'Unknown'),
+                                    "evidence": ev.get('description', str(ev)),
+                                    "strength": ev.get('strength', 0.5),
+                                    "reliability": ev.get('reliability', 0.5),
+                                    "impact": ev.get('strength', 0.5) * ev.get('reliability', 0.5)
+                                })
+                                total_impact += ev.get('strength', 0.5) * ev.get('reliability', 0.5)
+                            else:
+                                contradictory_evidence.append({
+                                    "condition": hyp_data.get('condition', 'Unknown'),
+                                    "evidence": str(ev),
+                                    "strength": 0.5,
+                                    "reliability": 0.5,
+                                    "impact": 0.25
+                                })
+                                total_impact += 0.25
+                break
+        
+        return {
+            "contradictory_evidence_count": len(contradictory_evidence),
+            "total_contradictory_impact": total_impact,
+            "average_impact": total_impact / len(contradictory_evidence) if contradictory_evidence else 0.0,
+            "evidence_details": contradictory_evidence,
+            "confidence_reduction": min(total_impact * 0.2, 0.5)  # Max 50% confidence reduction
+        }
 
 class BaseSpecializedAgent:
     """Base class for all specialized diagnostic agents"""
@@ -163,75 +664,316 @@ class BaseSpecializedAgent:
 
 class DrHypothesis(BaseSpecializedAgent):
     """
-    Dr. Hypothesis - Maintains probability-ranked differential diagnosis
-    Updates probabilities in a Bayesian manner after each new finding
+    Enhanced Dr. Hypothesis - Maintains probability-ranked differential diagnosis
+    with structured Bayesian reasoning, function calling, and advanced confidence assessment
     """
     
     def __init__(self, client: AsyncOpenAI):
         super().__init__("Dr. Hypothesis", client)
+        self.bayesian_helper = BayesianReasoningHelper()
+        
+    def _calculate_confidence_factors(self, hypotheses: List[Dict], evidence_items: List[str]) -> Dict[str, float]:
+        """Calculate confidence factors based on hypothesis and evidence characteristics"""
+        if not hypotheses:
+            return {"evidence_completeness": 0.0, "diagnostic_clarity": 0.0, "leading_hypothesis_strength": 0.0}
+        
+        # Leading hypothesis strength
+        max_prob = max(h.get("probability", 0.0) for h in hypotheses)
+        leading_strength = max_prob
+        
+        # Evidence completeness (based on number and type of evidence)
+        evidence_count = len(evidence_items)
+        evidence_completeness = min(evidence_count / 5.0, 1.0)  # Normalize to 0-1
+        
+        # Diagnostic clarity (probability separation between top hypotheses)
+        if len(hypotheses) >= 2:
+            probs = sorted([h.get("probability", 0.0) for h in hypotheses], reverse=True)
+            prob_separation = probs[0] - probs[1] if len(probs) > 1 else probs[0]
+            diagnostic_clarity = min(prob_separation * 2.0, 1.0)  # Scale separation
+        else:
+            diagnostic_clarity = max_prob
+        
+        return {
+            "evidence_completeness": evidence_completeness,
+            "diagnostic_clarity": diagnostic_clarity,
+            "leading_hypothesis_strength": leading_strength
+        }
+        
+    def _apply_bayesian_updates(self, current_hypotheses: List[DiagnosticHypothesis], 
+                               new_evidence: List[str]) -> List[Dict[str, Any]]:
+        """Apply Bayesian updates to existing hypotheses based on new evidence"""
+        updated_hypotheses = []
+        
+        for hyp in current_hypotheses:
+            # Start with current probability as prior
+            prior_prob = hyp.probability
+            
+            # Analyze new evidence impact
+            supporting_evidence = []
+            contradictory_evidence = []
+            
+            for evidence in new_evidence:
+                # Simple heuristic to categorize evidence (in real implementation, this would be more sophisticated)
+                if any(keyword in evidence.lower() for keyword in ["consistent", "supports", "confirms"]):
+                    supporting_evidence.append({
+                        "description": evidence,
+                        "impact_type": "supporting",
+                        "strength": 0.7,
+                        "reliability": 0.8,
+                        "source": "clinical"
+                    })
+                elif any(keyword in evidence.lower() for keyword in ["rules out", "negative", "inconsistent"]):
+                    contradictory_evidence.append({
+                        "description": evidence,
+                        "impact_type": "contradictory", 
+                        "strength": 0.6,
+                        "reliability": 0.8,
+                        "source": "clinical"
+                    })
+            
+            # Calculate likelihood ratio and posterior probability
+            net_lr = 1.0
+            for supp_ev in supporting_evidence:
+                lr = self.bayesian_helper.estimate_likelihood_ratio(supp_ev["strength"], "suggestive")
+                net_lr *= lr
+                
+            for contra_ev in contradictory_evidence:
+                lr = self.bayesian_helper.estimate_likelihood_ratio(contra_ev["strength"], "contradictory")
+                net_lr *= lr
+            
+            # Calculate posterior probability
+            posterior_prob = self.bayesian_helper.calculate_posterior(prior_prob, net_lr)
+            
+            updated_hypotheses.append({
+                "condition": hyp.condition,
+                "probability": posterior_prob,
+                "reasoning": f"Updated from {prior_prob:.3f} to {posterior_prob:.3f} based on new evidence. {hyp.reasoning}",
+                "supporting_evidence": supporting_evidence,
+                "contradictory_evidence": contradictory_evidence,
+                "bayesian_updates": [{
+                    "prior_probability": prior_prob,
+                    "posterior_probability": posterior_prob,
+                    "likelihood_ratio": net_lr,
+                    "evidence_weight": 0.8,
+                    "reasoning": f"Applied likelihood ratio {net_lr:.2f} based on {len(new_evidence)} new evidence items"
+                }],
+                "confidence_factors": {}
+            })
+        
+        return updated_hypotheses
         
     async def contribute(self, case_info: str, previous_findings: List[str], 
                         current_hypotheses: List[DiagnosticHypothesis],
                         session: CaseExecutionSession) -> Dict[str, Any]:
         
-        system_prompt = """You are Dr. Hypothesis, a specialist in differential diagnosis and Bayesian reasoning.
+        # Apply Bayesian updates if we have current hypotheses
+        if current_hypotheses and previous_findings:
+            updated_hypotheses = self._apply_bayesian_updates(current_hypotheses, previous_findings[-3:])
+        else:
+            updated_hypotheses = []
         
-Your role:
-1. Maintain a probability-ranked differential diagnosis with the top 3 most likely conditions
-2. Update probabilities based on new findings using Bayesian reasoning
-3. Provide clear reasoning for probability updates
-4. Consider both common and rare conditions based on clinical presentation
+        system_prompt = """You are Dr. Hypothesis, an expert in differential diagnosis and advanced Bayesian reasoning.
 
-Format your response as JSON with:
+Your enhanced capabilities include:
+1. Structured Bayesian probability updates with explicit prior/posterior calculations
+2. Evidence classification and impact assessment (supporting vs contradictory)
+3. Numerical confidence assessment with detailed factors
+4. Function-calling approach for reliable differential diagnosis output
+
+You must respond with a complete JSON structure that follows this exact format:
 {
     "hypotheses": [
         {
-            "condition": "condition name",
+            "condition": "Primary condition name",
             "probability": 0.XX,
-            "reasoning": "detailed reasoning",
-            "supporting_evidence": ["evidence1", "evidence2"],
-            "contradictory_evidence": ["contradiction1"]
+            "reasoning": "Detailed clinical reasoning with evidence analysis",
+            "supporting_evidence": [
+                {
+                    "description": "Evidence description", 
+                    "impact_type": "supporting",
+                    "strength": 0.X,
+                    "reliability": 0.X,
+                    "source": "clinical/lab/imaging/history"
+                }
+            ],
+            "contradictory_evidence": [
+                {
+                    "description": "Contradictory evidence",
+                    "impact_type": "contradictory", 
+                    "strength": 0.X,
+                    "reliability": 0.X,
+                    "source": "clinical/lab/imaging/history"
+                }
+            ],
+            "bayesian_updates": [
+                {
+                    "prior_probability": 0.XX,
+                    "posterior_probability": 0.XX,
+                    "likelihood_ratio": X.X,
+                    "evidence_weight": 0.X,
+                    "reasoning": "Explanation of Bayesian update"
+                }
+            ],
+            "confidence_factors": {
+                "evidence_completeness": 0.X,
+                "diagnostic_clarity": 0.X
+            }
         }
     ],
-    "bayesian_updates": "explanation of how probabilities changed",
-    "confidence_level": "low/medium/high"
-}"""
+    "bayesian_updates": "Overall explanation of probability updates and reasoning",
+    "confidence_assessment": {
+        "overall_confidence": 0.XX,
+        "leading_hypothesis_strength": 0.XX,
+        "evidence_completeness": 0.XX,
+        "diagnostic_clarity": 0.XX,
+        "uncertainty_factors": ["factor1", "factor2"],
+        "confidence_level": "low/medium/high"
+    },
+    "differential_reasoning": "Detailed reasoning for differential diagnosis ranking",
+    "key_discriminating_features": ["feature1", "feature2", "feature3"]
+}
 
+CRITICAL: Provide numerical confidence assessments and explicit Bayesian reasoning."""
+
+        # Prepare enhanced context
         findings_text = "\n".join(previous_findings) if previous_findings else "No additional findings yet."
-        current_hyp_text = "\n".join([f"- {h.condition} ({h.probability:.2f}): {h.reasoning}" 
-                                     for h in current_hypotheses]) if current_hypotheses else "No current hypotheses."
+        
+        if updated_hypotheses:
+            current_hyp_text = "\nPrevious hypotheses with Bayesian updates:\n" + \
+                "\n".join([f"- {h['condition']} (Prior: {h['bayesian_updates'][0]['prior_probability']:.3f} → Posterior: {h['probability']:.3f}): {h['reasoning'][:100]}..." 
+                          for h in updated_hypotheses])
+        elif current_hypotheses:
+            current_hyp_text = "\nCurrent hypotheses:\n" + \
+                "\n".join([f"- {h.condition} ({h.probability:.3f}): {h.reasoning}" 
+                          for h in current_hypotheses])
+        else:
+            current_hyp_text = "\nNo current hypotheses established."
         
         user_message = f"""
+=== CLINICAL CASE ANALYSIS ===
 Initial Case: {case_info}
 
-Previous Findings:
+Previous Findings and Evidence:
 {findings_text}
-
-Current Hypotheses:
 {current_hyp_text}
 
-Please provide updated differential diagnosis with probability estimates.
+TASK: Provide comprehensive differential diagnosis with:
+1. Structured Bayesian probability updates
+2. Evidence classification (supporting vs contradictory)
+3. Numerical confidence assessment
+4. Clear discriminating features
+
+Please analyze and update the differential diagnosis using advanced Bayesian reasoning.
 """
 
-        response = await self._call_llm(system_prompt, user_message)
+        response = await self._call_llm(system_prompt, user_message, temperature=0.3)
         session.add_agent_message(self.role_name, "hypothesis_update", response)
         
+        # Enhanced parsing with multiple fallback strategies
+        return await self._parse_structured_response(response, session)
+        
+    async def _parse_structured_response(self, response: str, session: CaseExecutionSession) -> Dict[str, Any]:
+        """Enhanced parsing with structured validation and graceful fallbacks"""
+        import json
+        import re
+        
         try:
-            # Parse JSON response
-            import re
+            # First, try to extract and parse JSON
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
-                parsed = json.loads(json_match.group())
-                return parsed
-        except:
-            pass
-            
-        # Fallback if JSON parsing fails
-        return {
+                parsed_json = json.loads(json_match.group())
+                
+                # Try to validate with enhanced HypothesisUpdate model
+                try:
+                    # Handle legacy format compatibility
+                    if "confidence_level" in parsed_json and "confidence_assessment" not in parsed_json:
+                        parsed_json["confidence_assessment"] = {
+                            "overall_confidence": 0.5,
+                            "leading_hypothesis_strength": 0.5,
+                            "evidence_completeness": 0.5,
+                            "diagnostic_clarity": 0.5,
+                            "uncertainty_factors": ["Legacy format conversion"],
+                            "confidence_level": parsed_json.get("confidence_level", "medium")
+                        }
+                    
+                    # Ensure required fields for enhanced model
+                    if "differential_reasoning" not in parsed_json:
+                        parsed_json["differential_reasoning"] = parsed_json.get("bayesian_updates", "Standard differential reasoning applied")
+                    
+                    if "key_discriminating_features" not in parsed_json:
+                        parsed_json["key_discriminating_features"] = []
+                    
+                    # Validate with Pydantic model
+                    structured_response = HypothesisUpdate(**parsed_json)
+                    structured_data = structured_response.dict()
+                    
+                    # Store enhanced structured data
+                    session.agent_messages[-1].structured_data = structured_data
+                    return structured_data
+                    
+                except Exception as pydantic_error:
+                    # Fallback to basic validation and correction
+                    validated_json = self._validate_and_correct_json(parsed_json)
+                    session.agent_messages[-1].structured_data = validated_json
+                    return validated_json
+                    
+        except json.JSONDecodeError as json_error:
+            # Final fallback - create minimal structure from text
+            return self._create_fallback_structure(response, session)
+    
+    def _validate_and_correct_json(self, parsed_json: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and correct JSON structure to ensure compatibility"""
+        corrected = {
             "hypotheses": [],
-            "bayesian_updates": response,
-            "confidence_level": "low"
+            "bayesian_updates": parsed_json.get("bayesian_updates", "Bayesian reasoning applied"),
+            "confidence_assessment": {
+                "overall_confidence": 0.5,
+                "leading_hypothesis_strength": 0.5,
+                "evidence_completeness": 0.5,
+                "diagnostic_clarity": 0.5,
+                "uncertainty_factors": ["JSON structure correction applied"],
+                "confidence_level": parsed_json.get("confidence_level", "medium")
+            },
+            "differential_reasoning": parsed_json.get("differential_reasoning", parsed_json.get("bayesian_updates", "Differential reasoning applied")),
+            "key_discriminating_features": parsed_json.get("key_discriminating_features", [])
         }
+        
+        # Process hypotheses with validation
+        if "hypotheses" in parsed_json and isinstance(parsed_json["hypotheses"], list):
+            for hyp in parsed_json["hypotheses"][:5]:  # Limit to 5
+                if isinstance(hyp, dict):
+                    corrected_hyp = {
+                        "condition": str(hyp.get("condition", "Unknown condition")),
+                        "probability": float(max(0.0, min(1.0, hyp.get("probability", 0.3)))),
+                        "reasoning": str(hyp.get("reasoning", "Clinical reasoning applied")),
+                        "supporting_evidence": [],
+                        "contradictory_evidence": [],
+                        "bayesian_updates": [],
+                        "confidence_factors": {}
+                    }
+                    corrected["hypotheses"].append(corrected_hyp)
+        
+        return corrected
+    
+    def _create_fallback_structure(self, response: str, session: CaseExecutionSession) -> Dict[str, Any]:
+        """Create minimal fallback structure when all parsing fails"""
+        fallback = {
+            "hypotheses": [],
+            "bayesian_updates": f"Fallback parsing applied. Original response: {response[:200]}...",
+            "confidence_assessment": {
+                "overall_confidence": 0.3,
+                "leading_hypothesis_strength": 0.3,
+                "evidence_completeness": 0.2,
+                "diagnostic_clarity": 0.2,
+                "uncertainty_factors": ["Parsing failed", "Fallback structure used"],
+                "confidence_level": "low"
+            },
+            "differential_reasoning": "Fallback differential reasoning due to parsing failure",
+            "key_discriminating_features": []
+        }
+        
+        session.agent_messages[-1].structured_data = fallback
+        return fallback
 
 class DrTestChooser(BaseSpecializedAgent):
     """
@@ -287,11 +1029,25 @@ Select the most discriminative diagnostic tests to differentiate between these h
         response = await self._call_llm(system_prompt, user_message)
         session.add_agent_message(self.role_name, "test_recommendation", response)
         
+        # Try structured parsing first
+        structured_data = None
         try:
+            import json
             import re
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
-                return json.loads(json_match.group())
+                parsed_json = json.loads(json_match.group())
+                # Try to create structured TestRecommendations
+                try:
+                    structured_response = TestRecommendations(**parsed_json)
+                    structured_data = structured_response.dict()
+                    session.agent_messages[-1].structured_data = structured_data
+                    return structured_data
+                except Exception:
+                    # Fall back to raw JSON
+                    structured_data = parsed_json
+                    session.agent_messages[-1].structured_data = structured_data
+                    return parsed_json
         except:
             pass
             
@@ -569,12 +1325,25 @@ Format your response as JSON:
     "confidence_assessment": "assessment of current diagnostic confidence"
 }}"""
 
-        # Extract key information from panel contributions
+        # Extract key information from panel contributions with enhanced confidence assessment
         hypothesis_data = panel_contributions.get("hypothesis", {})
         test_data = panel_contributions.get("tests", {})
         challenge_data = panel_contributions.get("challenges", {})
         stewardship_data = panel_contributions.get("stewardship", {})
         checklist_data = panel_contributions.get("checklist", {})
+        
+        # Get enhanced confidence assessment from session
+        confidence_assessment = session.get_confidence_assessment()
+        contradictory_impact = session.get_contradictory_evidence_impact()
+        
+        # Calculate numerical confidence threshold for decision making
+        overall_confidence = confidence_assessment.get("overall_confidence", 0.3)
+        leading_strength = confidence_assessment.get("leading_hypothesis_strength", 0.3)
+        evidence_completeness = confidence_assessment.get("evidence_completeness", 0.3)
+        
+        # Adjust confidence based on contradictory evidence
+        confidence_reduction = contradictory_impact.get("confidence_reduction", 0.0)
+        adjusted_confidence = max(overall_confidence - confidence_reduction, 0.1)
         
         # Format panel contributions for the LLM
         panel_summary = f"""
@@ -596,6 +1365,16 @@ Format your response as JSON:
 
         findings_text = "\n".join(previous_findings) if previous_findings else "No additional findings yet."
         
+        # Decision guidance based on numerical thresholds
+        if adjusted_confidence >= 0.85:
+            confidence_guidance = "HIGH CONFIDENCE: Strong recommendation for diagnosis"
+        elif adjusted_confidence >= 0.65:
+            confidence_guidance = "MEDIUM CONFIDENCE: Consider diagnosis or targeted testing"
+        elif adjusted_confidence >= 0.45:
+            confidence_guidance = "LOW-MEDIUM CONFIDENCE: Additional testing likely needed"
+        else:
+            confidence_guidance = "LOW CONFIDENCE: More information gathering required"
+
         user_message = f"""
 Case: {case_info}
 
@@ -605,17 +1384,35 @@ Accumulated Findings:
 Current Round: {session.current_round} of {max_rounds} {"(FINAL ROUND - MUST DIAGNOSE)" if is_final_round else ""}
 Total Cost So Far: ${session.total_cost:.2f}
 
+=== ENHANCED CONFIDENCE ASSESSMENT ===
+Overall Confidence: {overall_confidence:.3f}
+Leading Hypothesis Strength: {leading_strength:.3f}
+Evidence Completeness: {evidence_completeness:.3f}
+Contradictory Evidence Impact: -{confidence_reduction:.3f}
+ADJUSTED CONFIDENCE: {adjusted_confidence:.3f}
+Guidance: {confidence_guidance}
+
+Contradictory Evidence Summary:
+- Count: {contradictory_impact.get('contradictory_evidence_count', 0)} items
+- Total Impact: {contradictory_impact.get('total_contradictory_impact', 0.0):.3f}
+- Confidence Reduction: {confidence_reduction:.3f}
+
 Panel Member Contributions:
 {panel_summary}
 
-Based on all panel member inputs, determine the consensus action for this round. Consider:
-1. Diagnostic confidence from Dr. Hypothesis
-2. Available tests from Dr. Test-Chooser  
-3. Concerns raised by Dr. Challenger
-4. Cost considerations from Dr. Stewardship
-5. Quality assessment from Dr. Checklist
+DECISION THRESHOLDS:
+- Diagnose: Adjusted confidence ≥ 0.85 OR final round
+- Test: Adjusted confidence 0.45-0.84 AND tests can discriminate
+- Question: Adjusted confidence < 0.45 AND questions can clarify
 
-{"FINAL ROUND REQUIREMENT: You must provide a diagnosis based on the best available evidence, even if confidence is lower than ideal. Select the most probable diagnosis from Dr. Hypothesis's assessment and provide clear reasoning about the diagnostic reasoning process." if is_final_round else "Choose the most appropriate action and provide detailed reasoning."}
+Based on all panel member inputs and numerical confidence assessment, determine the consensus action. Consider:
+1. Enhanced diagnostic confidence from Dr. Hypothesis (numerical assessment)
+2. Available tests from Dr. Test-Chooser with discriminative value
+3. Concerns and contradictory evidence from Dr. Challenger
+4. Cost-effectiveness from Dr. Stewardship
+5. Quality and completeness from Dr. Checklist
+
+{"FINAL ROUND REQUIREMENT: You must provide a diagnosis based on the best available evidence, even if confidence is lower than ideal. Select the most probable diagnosis from Dr. Hypothesis's assessment and provide clear reasoning about the diagnostic reasoning process." if is_final_round else "Choose the most appropriate action using the numerical confidence thresholds above."}
 """
 
         response = await self._call_llm(system_prompt, user_message)
@@ -810,6 +1607,34 @@ class DiagnosticOrchestrator:
             action_content = consensus_result.get("action_content", {})
             reasoning = consensus_result.get("reasoning", "")
             
+            # Check for stagnation before executing action
+            if consensus_action in [ActionType.ASK_QUESTIONS.value, ActionType.ORDER_TESTS.value]:
+                content = action_content.get("questions" if consensus_action == ActionType.ASK_QUESTIONS.value else "tests", [])
+                proposed_action = DiagnosticAction(
+                    action_type=consensus_action,
+                    content=content,
+                    reasoning=reasoning,
+                    round_number=session.current_round
+                )
+                
+                if session.check_stagnation(proposed_action):
+                    # Force diagnosis if stagnation detected
+                    session.deliberation_state.stagnation_detected = True
+                    if current_hypotheses:
+                        session.final_diagnosis = current_hypotheses[0].condition
+                        session.confidence_score = current_hypotheses[0].probability
+                    else:
+                        session.final_diagnosis = "Insufficient data - stagnation detected"
+                        session.confidence_score = 0.2
+                    
+                    session.add_trace(
+                        ActionType.MAKE_DIAGNOSIS,
+                        "Panel Consensus",
+                        f"Final Diagnosis (Stagnation Detected): {session.final_diagnosis}",
+                        {"confidence": session.confidence_score, "reason": "stagnation_detected", "stagnated_action": str(proposed_action)}
+                    )
+                    break
+            
             if consensus_action == ActionType.MAKE_DIAGNOSIS.value:
                 session.final_diagnosis = action_content.get("diagnosis", "Unknown diagnosis")
                 session.confidence_score = action_content.get("confidence", 0.0)
@@ -831,6 +1656,12 @@ class DiagnosticOrchestrator:
                 tests_to_order = action_content.get("tests", [])
                 test_results, test_costs = await self._simulate_test_execution(tests_to_order)
                 accumulated_findings.extend(test_results)
+                
+                # Update enhanced state tracking
+                for test in tests_to_order:
+                    session.case_state.add_test(test)
+                for result in test_results:
+                    session.add_evidence(result)
                 session.add_trace(
                     ActionType.ORDER_TESTS,
                     "Consensus Coordinator",
@@ -850,6 +1681,12 @@ class DiagnosticOrchestrator:
                 questions_to_ask = action_content.get("questions", [])
                 question_results, visit_cost = await self._simulate_question_answers(questions_to_ask)
                 accumulated_findings.extend(question_results)
+                
+                # Update enhanced state tracking
+                for question in questions_to_ask:
+                    session.case_state.add_question(question)
+                for result in question_results:
+                    session.add_evidence(result)
                 session.add_trace(
                     ActionType.ASK_QUESTIONS,
                     "Consensus Coordinator",
