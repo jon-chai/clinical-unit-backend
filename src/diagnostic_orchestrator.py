@@ -103,6 +103,7 @@ class StewardshipReview(BaseModel):
     """Structured output from Dr. Stewardship"""
     cost_analysis: List[CostAnalysisItem] = Field(default_factory=list, description="Analysis of proposed tests")
     budget_recommendation: Literal["continue", "proceed_with_caution", "stop_and_reassess"] = Field(..., description="Budget guidance")
+    alternative_questions: List[str] = Field(default_factory=list, max_items=3, description="Suggested questions that could replace or guide testing")
     stewardship_notes: str = Field(..., min_length=10, description="Overall cost-consciousness guidance")
 
 class QualityGap(BaseModel):
@@ -967,8 +968,7 @@ Be rigorous and challenge assumptions and biases in order to drive towards impro
 
 class DrStewardship(BaseSpecializedAgent):
     """
-    Dr. Stewardship - Enforces cost-conscious care, advocates for cheaper alternatives,
-    vetoes low-yield expensive tests
+    Dr. Stewardship - Enhanced cost-value framework specialist for resource optimization
     """
     
     def __init__(self, client: AsyncOpenAI):
@@ -979,67 +979,102 @@ class DrStewardship(BaseSpecializedAgent):
                         session: CaseExecutionSession,
                         proposed_tests: List[TestRecommendation] = None) -> Dict[str, Any]:
         
-        system_prompt = """You are Dr. Stewardship, the guardian of cost-effective and value-based care.
-
-Your role:
-1. Review proposed tests for cost-effectiveness
-2. Suggest cheaper alternatives when diagnostically equivalent
-3. Veto low-yield expensive tests
-4. Advocate for step-wise diagnostic approach
-5. Balance diagnostic yield against cost and patient burden
-
-Format your response as JSON:
-{
-    "cost_analysis": [
-        {
-            "test_name": "test being reviewed",
-            "approval_status": "approved / conditional / rejected",
-            "reasoning": "cost-benefit analysis",
-            "cheaper_alternative": "alternative test if applicable",
-            "cost_category": "low / moderate / high / very high"
-        }
-    ],
-    "budget_recommendation": "continue / proceed with caution / stop and reassess",
-    "stewardship_notes": "overall cost-consciousness guidance"
-}"""
-
+        # Build contextual information
         proposed_tests_text = ""
         if proposed_tests:
-            proposed_tests_text = "\n".join([f"- {t.test_name}: {t.rationale} (Est. cost: ${t.estimated_cost or 'unknown'})" 
+            proposed_tests_text = "\n".join([f"- {t.test_name}: {t.rationale} (Priority: {t.priority}, Est. cost: ${t.estimated_cost or 'TBD'})" 
                                            for t in proposed_tests])
         
         current_cost = session.total_cost
+        hypotheses_summary = "\n".join([f"- {h.condition} (probability: {h.probability:.2f})" for h in current_hypotheses[:3]]) if current_hypotheses else "No hypotheses established yet."
         
-        hypotheses_summary = "\n".join([f"- {h.condition} ({h.probability:.2f})" for h in current_hypotheses[:3]]) if current_hypotheses else "No hypotheses yet."
+        accumulated_findings = ""
+        if previous_findings:
+            accumulated_findings = "\n".join([f"- {finding}" for finding in previous_findings[-5:]])  # Last 5 findings
         
-        user_message = f"""
+        system_prompt = f"""You are Dr. Stewardship, the resource optimization and cost-effectiveness specialist who ensures maximum diagnostic value at minimum necessary cost.
+
+Core responsibilities:
+• Evaluate proposed tests using sophisticated cost-value framework
+• Advocate for high-value diagnostic strategies over expensive low-yield approaches  
+• Recommend targeted questions when they provide better value than testing
+• Suggest cost-effective alternatives when diagnostically equivalent options exist
+• Balance diagnostic thoroughness with responsible resource stewardship
+• Consider cumulative cost impact on overall diagnostic strategy
+
+Cost-Value Decision Framework:
+• High-Value: Low cost + high diagnostic yield + directly changes management decisions
+• Moderate-Value: Reasonable cost + specific indication + meaningful incremental diagnostic value
+• Low-Value: High cost + limited yield + minimal impact on clinical decision-making
+• No-Value: Any cost + no diagnostic contribution + ordered reflexively without clear indication
+
+Alternative Strategy Considerations:
+• Can targeted history-taking or physical examination provide equivalent information?
+• Is there a staged diagnostic approach (lower-cost screening test first)?  
+• Does this test result actually change the diagnostic or therapeutic approach?
+• Would asking specific follow-up questions eliminate the need for this test?
+• Are we ordering this test out of completeness rather than true clinical necessity?
+
+Approach:
+• Systematically evaluate each proposed test against cost-value framework
+• Prioritize questions and history-gathering over expensive confirmatory testing when appropriate
+• Suggest specific cost-effective alternatives with equivalent diagnostic value
+• Challenge tests that don't clearly advance the diagnostic process or change management
+• Consider cumulative financial burden and recommend budget-conscious sequencing
+• Advocate for stepwise approaches that optimize information gain per dollar spent
+
+Output format:
+{{
+    "cost_analysis": [
+        {{
+            "test_name": "specific test being evaluated",
+            "approval_status": "approved / conditional / rejected",
+            "reasoning": "detailed cost-benefit analysis with value assessment",
+            "cheaper_alternative": "specific alternative test or approach if applicable",
+            "cost_category": "low / moderate / high / very_high"
+        }}
+    ],
+    "budget_recommendation": "continue / proceed_with_caution / stop_and_reassess",
+    "alternative_questions": ["suggested questions that could replace or guide testing decisions"],
+    "stewardship_notes": "overall cost-consciousness guidance and strategic recommendations"
+}}
+
 Case: {case_info}
+
+Case state:
+Current leading hypotheses: 
+{hypotheses_summary}
+
+Accumulated findings:
+{accumulated_findings or "No previous findings available."}
 
 Current Cumulative Cost: ${current_cost:.2f}
 
-Proposed Tests:
-{proposed_tests_text or "No tests proposed yet."}
+Proposed Tests for Evaluation:
+{proposed_tests_text or "No tests proposed for this round."}
 
-Current Hypotheses:
-{hypotheses_summary}
+Apply your cost-value framework to evaluate the proposed diagnostic approach. Consider whether targeted questions might provide better value than testing. Focus on maximizing diagnostic accuracy while minimizing unnecessary cost."""
 
-Review these tests from a cost-effectiveness perspective. Are there cheaper alternatives?
-"""
-
-        response = await self._call_llm(system_prompt, user_message)
+        response = await self._call_llm(system_prompt, "")
         session.add_agent_message(self.role_name, "stewardship_review", response)
         
+        # Parse structured response
         try:
             import re
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
-                return json.loads(json_match.group())
-        except:
+                parsed_response = json.loads(json_match.group())
+                # Ensure all required fields are present
+                if "cost_analysis" in parsed_response and "budget_recommendation" in parsed_response:
+                    return parsed_response
+        except (json.JSONDecodeError, Exception):
             pass
             
+        # Fallback structure if parsing fails
         return {
             "cost_analysis": [],
             "budget_recommendation": "continue",
+            "alternative_questions": [],
             "stewardship_notes": response
         }
 
